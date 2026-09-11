@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,6 +19,18 @@ import (
 // HEVC-in-MKV and many other real-world files, so anything that isn't
 // H.264/AAC in a browser-friendly container is converted to a growing HLS
 // playlist that hls.js (web) and libmpv (native) both play natively.
+
+// errNeedsEncode signals that the file's video codec requires a full encode
+// for browser playback, which the live path no longer performs.
+type errNeedsEncode struct{ reason string }
+
+func (e errNeedsEncode) Error() string { return e.reason }
+
+// isNeedsEncode reports whether err is (or wraps) an errNeedsEncode.
+func isNeedsEncode(err error) bool {
+	var e errNeedsEncode
+	return errors.As(err, &e)
+}
 
 type hlsJob struct {
 	dir        string
@@ -224,25 +237,32 @@ func (s *Server) resolveMediaFile(kind string, id int64) (string, error) {
 	return "", fmt.Errorf("unknown media kind %q", kind)
 }
 
-// waitForSegments blocks until at least one non-empty segment exists or the
-// ffmpeg process exits.
+// waitForSegments blocks until the HLS playlist exists and references at
+// least one segment, or the ffmpeg process exits. A clean exit (ffmpeg
+// encoded the whole file, e.g. a short clip) is a success as long as a
+// playlist was written.
 func (s *Server) waitForSegments(job *hlsJob) error {
 	deadline := time.Now().Add(15 * time.Second)
+	playlist := filepath.Join(job.dir, "index.m3u8")
+	ready := func() bool {
+		data, err := os.ReadFile(playlist)
+		return err == nil && strings.Contains(string(data), "seg_")
+	}
 	for time.Now().Before(deadline) {
-		select {
-		case <-job.done:
-			return fmt.Errorf("ffmpeg exited early")
-		default:
+		if ready() {
+			return nil
 		}
-		segs, _ := filepath.Glob(filepath.Join(job.dir, "seg_*.ts"))
-		for _, f := range segs {
-			if fi, err := os.Stat(f); err == nil && fi.Size() > 0 {
+		select {
+		case err := <-job.done:
+			if err == nil && ready() {
 				return nil
 			}
+			return fmt.Errorf("ffmpeg exited before the playlist was ready")
+		default:
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("timed out waiting for first segment")
+	return fmt.Errorf("timed out waiting for HLS playlist")
 }
 
 // ensureHLSJob starts (or reuses) an ffmpeg job producing HLS for the item and
@@ -288,13 +308,18 @@ func (s *Server) ensureHLSJob(kind string, id, start int, audioIdx int) (string,
 	hlsJobs[key] = &hlsJob{starting: true}
 	hlsMu.Unlock()
 
-	video, audio, err := probeCodecs(full)
+	video, _, err := probeCodecs(full)
 	if err != nil {
 		s.dropHLSJob(key)
 		return "", err
 	}
-	copyVideo := video == "h264"
-	copyAudio := audio == "" || audio == "aac" || audio == "mp3"
+	// The live path only remuxes H.264 video. Everything else needs a full
+	// encode, which the web app routes through a prepared web copy instead.
+	if video != "h264" {
+		s.dropHLSJob(key)
+		return "", errNeedsEncode{fmt.Sprintf(
+			"the video is %s, which browsers can't play; it needs to be prepared (encoded) first", video)}
+	}
 
 	dir := filepath.Join(s.hlsBaseDir(), key)
 	os.RemoveAll(dir)
@@ -304,7 +329,7 @@ func (s *Server) ensureHLSJob(kind string, id, start int, audioIdx int) (string,
 		s.dropHLSJob(key)
 		return "", err
 	}
-	cmd, err := s.startFFmpegHLS(full, dir, start, copyVideo, copyAudio, audioIdx, logF)
+	cmd, err := s.startFFmpegHLS(full, dir, start, audioIdx, logF)
 	if err != nil {
 		logF.Close()
 		os.RemoveAll(dir)
@@ -365,8 +390,11 @@ func (s *Server) dropHLSJob(key string) {
 }
 
 // startFFmpegHLS builds and starts the ffmpeg command for one HLS job.
+// The caller guarantees the video is H.264 (it is remuxed, never encoded).
 // audioIdx >= 0 maps only that audio stream (0:a:audioIdx), -1 maps all.
-func (s *Server) startFFmpegHLS(full, dir string, start int, copyVideo, copyAudio bool, audioIdx int, logF *os.File) (*exec.Cmd, error) {
+// Audio is always re-encoded to stereo AAC: Chromium's MSE rejects the
+// 5.1/7.1 AAC that copy-mode used to produce.
+func (s *Server) startFFmpegHLS(full, dir string, start int, audioIdx int, logF *os.File) (*exec.Cmd, error) {
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
 	if start > 0 {
 		args = append(args, "-ss", strconv.Itoa(start))
@@ -376,19 +404,10 @@ func (s *Server) startFFmpegHLS(full, dir string, start int, copyVideo, copyAudi
 	if audioIdx >= 0 {
 		aMap = []string{"-map", fmt.Sprintf("0:a:%d", audioIdx)}
 	}
-	switch {
-	case copyVideo && copyAudio:
-		args = append(args, "-map", "0:v:0", aMap[0], aMap[1], "-c:v", "copy", "-c:a", "copy")
-	case copyVideo:
-		args = append(args, "-map", "0:v:0", aMap[0], aMap[1],
-			"-c:v", "copy",
-			"-c:a", "aac", "-b:a", "128k")
-	default:
-		args = append(args, "-map", "0:v:0", aMap[0], aMap[1],
-			"-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
-			"-c:a", "aac", "-b:a", "128k")
-	}
 	args = append(args,
+		"-map", "0:v:0", aMap[0], aMap[1],
+		"-c:v", "copy",
+		"-c:a", "aac", "-ac", "2", "-b:a", "192k",
 		"-f", "hls", "-hls_time", "10", "-hls_list_size", "0", "-hls_playlist_type", "event",
 		"-hls_segment_filename", filepath.Join(dir, "seg_%05d.ts"),
 		filepath.Join(dir, "index.m3u8"))
@@ -445,6 +464,13 @@ func (s *Server) handleHLSMaster(w http.ResponseWriter, r *http.Request) {
 	key := hlsFullKey(kind, int(id), start, audioIdx)
 	dir, err := s.ensureHLSJob(kind, int(id), start, audioIdx)
 	if err != nil {
+		if isNeedsEncode(err) {
+			writeJSON(w, 409, map[string]string{
+				"decision": "needs_encode",
+				"reason":   err.Error(),
+			})
+			return
+		}
 		writeError(w, 500, "transcoding failed: "+err.Error())
 		return
 	}
