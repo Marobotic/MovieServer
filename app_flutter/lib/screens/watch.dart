@@ -34,8 +34,10 @@ class WatchScreen extends StatefulWidget {
 
 class _WatchScreenState extends State<WatchScreen> {
   late final PlaybackController _controller;
+  late final Api _api;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
+  Duration _offset = Duration.zero;
   bool _playing = false;
   bool _buffering = true;
   bool _controlsVisible = true;
@@ -54,6 +56,7 @@ class _WatchScreenState extends State<WatchScreen> {
   @override
   void initState() {
     super.initState();
+    _api = context.read<Api>();
     _controller = createPlaybackController();
     _listen();
     _open();
@@ -73,7 +76,8 @@ class _WatchScreenState extends State<WatchScreen> {
     }
     try {
       // resume from last position for library media
-      if (widget.item.mediaKind == 'movie' || widget.item.mediaKind == 'episode') {
+      if (widget.item.mediaKind == 'movie' ||
+          widget.item.mediaKind == 'episode') {
         final cont = await api.continueWatching();
         for (final c in cont) {
           if (c.mediaKind == widget.item.mediaKind &&
@@ -93,13 +97,13 @@ class _WatchScreenState extends State<WatchScreen> {
       var fmtSupported = true;
       String? fmtReason;
       try {
-final fmt =
-          await api.detect(widget.item.mediaKind, widget.item.mediaId);
-      fmtSupported = fmt.supported;
-      fmtReason = fmt.reason;
-      _knownDuration = Duration(seconds: fmt.durationSec);
-      if (fmt.durationSec > 0) setState(() {});
-    } catch (_) {
+        final fmt =
+            await api.detect(widget.item.mediaKind, widget.item.mediaId);
+        fmtSupported = fmt.supported;
+        fmtReason = fmt.reason;
+        _knownDuration = Duration(seconds: fmt.durationSec);
+        if (fmt.durationSec > 0) setState(() {});
+      } catch (_) {
         // Probe is best-effort; if it fails, still try to play.
       }
       if (!mounted) return;
@@ -117,6 +121,7 @@ final fmt =
             startSeconds: startAt.inSeconds),
         startAt: Duration.zero,
       );
+      _offset = startAt;
     } else {
       await _controller.open(url, startAt: startAt);
     }
@@ -176,7 +181,8 @@ final fmt =
               ),
             ..._tracks.subtitles.map((s) => ListTile(
                   leading: const Icon(Icons.subtitles, color: Colors.white70),
-                  title: Text(s.name, style: const TextStyle(color: Colors.white)),
+                  title:
+                      Text(s.name, style: const TextStyle(color: Colors.white)),
                   subtitle: s.language.isNotEmpty
                       ? Text(s.language,
                           style: const TextStyle(color: Colors.white38))
@@ -235,7 +241,8 @@ final fmt =
                 ],
               ),
             ),
-            const Divider(color: Colors.white12, height: 24, indent: 20, endIndent: 20),
+            const Divider(
+                color: Colors.white12, height: 24, indent: 20, endIndent: 20),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
               child: Text('Audio',
@@ -293,23 +300,23 @@ final fmt =
   }
 
   void _startProgressTimer() {
-    _progressTimer = Timer.periodic(const Duration(seconds: 5), (_) => _save(false));
+    _progressTimer = Timer.periodic(const Duration(seconds: 5), (_) => _save());
   }
 
-  Future<void> _save(bool finalSave) async {
+  Future<void> _save() async {
     if (widget.item.mediaKind == 'external') return;
     final dur = _effectiveSec;
-    final pos = _disposePos.inSeconds;
+    final pos = _offset.inSeconds + _disposePos.inSeconds;
     if (dur <= 0 || pos < 0) return;
-    final done = finalSave || (dur > 0 && (pos / dur) > 0.85);
+    final done = dur > 0 && (pos / dur) > 0.9;
     try {
-      await context.read<Api>().saveProgress(
-            widget.item.mediaKind,
-            widget.item.mediaId,
-            pos,
-            dur,
-            done,
-          );
+      await _api.saveProgress(
+        widget.item.mediaKind,
+        widget.item.mediaId,
+        pos,
+        dur,
+        done,
+      );
     } catch (_) {}
   }
 
@@ -326,12 +333,12 @@ final fmt =
     });
   }
 
-    int get _effectiveSec {
-      final known = _knownDuration.inSeconds;
-      return known > 0 ? known : _duration.inSeconds;
-    }
+  int get _effectiveSec {
+    final known = _knownDuration.inSeconds;
+    return known > 0 ? known : _duration.inSeconds;
+  }
 
-    String _fmt(Duration d) {
+  String _fmt(Duration d) {
     final h = d.inHours;
     final m = (d.inMinutes % 60).toString().padLeft(2, '0');
     final s = (d.inSeconds % 60).toString().padLeft(2, '0');
@@ -345,16 +352,17 @@ final fmt =
     for (final s in _subs) {
       s.cancel();
     }
-    _save(true);
+    _save();
     _controller.dispose();
     super.dispose();
   }
 
+  int get _realSec => _offset.inSeconds + _position.inSeconds;
+
   @override
   Widget build(BuildContext context) {
-    final progress = _effectiveSec > 0
-        ? (_position.inSeconds / _effectiveSec).clamp(0.0, 1.0)
-        : 0.0;
+    final progress =
+        _effectiveSec > 0 ? (_realSec / _effectiveSec).clamp(0.0, 1.0) : 0.0;
     return Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
@@ -392,8 +400,7 @@ final fmt =
                         const SizedBox(height: 8),
                         Text(_formatError!,
                             style: const TextStyle(
-                                color: Colors.white54,
-                                fontSize: 14),
+                                color: Colors.white54, fontSize: 14),
                             textAlign: TextAlign.center),
                         const SizedBox(height: 24),
                         ElevatedButton(
@@ -453,8 +460,10 @@ final fmt =
                           setState(() {});
                         },
                         onChangeEnd: (v) {
-                          _controller.seek(
-                              Duration(seconds: (v * _effectiveSec).round()));
+                          final target = (v * _effectiveSec).round();
+                          final rel = target - _offset.inSeconds;
+                          _controller
+                              .seek(Duration(seconds: rel < 0 ? 0 : rel));
                         },
                       ),
                       Row(
@@ -488,8 +497,8 @@ final fmt =
                             color: Colors.white,
                             icon: const Icon(Icons.forward_10),
                             onPressed: () {
-                              _controller
-                                  .seek(_position + const Duration(seconds: 10));
+                              _controller.seek(
+                                  _position + const Duration(seconds: 10));
                             },
                           ),
                           IconButton(
@@ -497,21 +506,21 @@ final fmt =
                                 ? const Color(0xFFE50914)
                                 : Colors.white,
                             icon: const Icon(Icons.subtitles),
-                            onPressed: _tracksLoaded && _tracks.subtitles.isNotEmpty
-                                ? _openTrackSheet
-                                : null,
+                            onPressed:
+                                _tracksLoaded && _tracks.subtitles.isNotEmpty
+                                    ? _openTrackSheet
+                                    : null,
                           ),
                           IconButton(
                             color: Colors.white,
                             icon: const Icon(Icons.settings_voice),
-                            onPressed:
-                                _tracksLoaded && _tracks.audio.length > 1
-                                    ? _openTrackSheet
-                                    : null,
+                            onPressed: _tracksLoaded && _tracks.audio.length > 1
+                                ? _openTrackSheet
+                                : null,
                           ),
                           const Spacer(),
                           Text(
-                            '${_fmt(_position)} / ${_fmt(Duration(seconds: _effectiveSec))}',
+                            '${_fmt(Duration(seconds: _realSec))} / ${_fmt(Duration(seconds: _effectiveSec))}',
                             style: const TextStyle(
                                 color: Colors.white, fontSize: 13),
                           ),
