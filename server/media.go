@@ -252,11 +252,6 @@ func (s *Server) subtitleTracks(kind string, id int64) ([]subtitleTrack, error) 
 	}
 	out := make([]subtitleTrack, 0, len(subs))
 	for i, sf := range subs {
-		mime := "text/plain"
-		if strings.EqualFold(filepath.Ext(sf.Path), ".vtt") {
-			mime = "text/vtt"
-		}
-		_ = mime
 		out = append(out, subtitleTrack{
 			Index:    i,
 			URL:      fmt.Sprintf("/api/%s/%d/subtitles/%d", route, id, i),

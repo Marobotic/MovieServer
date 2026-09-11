@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"errors"
-	"time"
 )
 
 // ---- movie queries ----
@@ -110,11 +109,6 @@ func (s *Server) getEpisode(id int64) (*Episode, error) {
 
 // ---- progress ----
 
-type watchedKey struct {
-	kind string
-	id   int64
-}
-
 func (s *Server) saveProgress(userID int64, kind string, mediaID, pos, dur int64, completed bool) error {
 	_, err := s.db.Exec(`INSERT INTO progress (user_id, media_kind, media_id, position, duration, completed, updated_at)
 		VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)
@@ -189,5 +183,3 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
-
-var _ = time.Now

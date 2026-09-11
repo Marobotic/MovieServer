@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -240,9 +239,4 @@ func (s *Server) userCount() int {
 	var n int
 	s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
 	return n
-}
-
-// writeSystemd runs nothing; keep it simple. We also create data dir on boot.
-func ensureDirs(p string) {
-	os.MkdirAll(p, 0o755)
 }

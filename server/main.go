@@ -277,7 +277,3 @@ const splashHTML = `<!doctype html>
 <p>Running. No app built yet.</p>
 <p><a href="/health" style="color:#E50914">health check</a></p>
 </div></body></html>`
-
-func netInterfaceAddrsShim() ([]interface{}, error) {
-	return []interface{}{}, fmt.Errorf("unused")
-}

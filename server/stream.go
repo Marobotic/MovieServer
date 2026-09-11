@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"mime"
 	"net/http"
 	"os"
@@ -106,9 +105,4 @@ func (s *Server) serveVideoFile(w http.ResponseWriter, r *http.Request, full str
 	w.Header().Set("Content-Type", guessContentType(full))
 	w.Header().Set("Accept-Ranges", "bytes")
 	http.ServeContent(w, r, filepath.Base(full), fi.ModTime(), f)
-}
-
-// nopWriter is a tiny helper to check handler wiring at startup.
-func streamDesc(kind string, id int64) string {
-	return fmt.Sprintf("%s/%d (Range-enabled)", kind, id)
 }
