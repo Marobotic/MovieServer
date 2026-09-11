@@ -193,6 +193,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/upload", s.requireAdmin(s.handleUpload))
 	mux.HandleFunc("GET /api/admin/tmdb/search", s.requireAdmin(s.handleTMDBSearch))
 	mux.HandleFunc("GET /api/admin/problems", s.requireAdmin(s.handleProblems))
+	mux.HandleFunc("GET /api/admin/library_health", s.requireAdmin(s.handleLibraryHealth))
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"status": "ok", "version": s.version})

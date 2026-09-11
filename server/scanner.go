@@ -292,6 +292,7 @@ func (s *Server) upsertMovie(m *Movie, metadataOnly bool) {
 		if err != nil {
 			fmt.Println("upsert movie:", err)
 		}
+		s.checkMedia("movie", existing.ID)
 		if existing.TMDbID == 0 {
 			if existing.Title != m.Title {
 				s.db.Exec(`UPDATE movies SET title=? WHERE id=?`, m.Title, existing.ID)
@@ -311,6 +312,7 @@ func (s *Server) upsertMovie(m *Movie, metadataOnly bool) {
 		return
 	}
 	m.ID, _ = res.LastInsertId()
+	s.checkMedia("movie", m.ID)
 }
 
 func boolInt(b bool) int {
@@ -345,11 +347,13 @@ func (s *Server) pruneMovies(dir string) error {
 			// rows without a file path are metadata ghosts; drop them
 			s.db.Exec(`DELETE FROM movies WHERE id=?`, id)
 			s.db.Exec(`DELETE FROM progress WHERE media_kind='movie' AND media_id=?`, id)
+			s.db.Exec(`DELETE FROM media_checks WHERE kind='movie' AND media_id=?`, id)
 			continue
 		}
 		if full, err := resolveRel(s.conf.MediaDir, rel); err != nil || !fileExists(full) {
 			s.db.Exec(`DELETE FROM movies WHERE id=?`, id)
 			s.db.Exec(`DELETE FROM progress WHERE media_kind='movie' AND media_id=?`, id)
+			s.db.Exec(`DELETE FROM media_checks WHERE kind='movie' AND media_id=?`, id)
 		}
 	}
 	return rows.Err()
@@ -478,16 +482,21 @@ func (s *Server) upsertEpisode(show *Show, season int, fileName, fullPath string
 	if err == nil {
 		if oldSize == size {
 			s.db.Exec(`UPDATE episodes SET title=?, duration_sec=?, broken=? WHERE id=? AND title != ?`, title, dur, boolInt(broken), id, title)
+			s.checkMedia("episode", id)
 			return false
 		}
 		s.db.Exec(`UPDATE episodes SET size_bytes=?, title=?, duration_sec=?, broken=? WHERE id=?`, size, title, dur, boolInt(broken), id)
+		s.checkMedia("episode", id)
 		return true
 	}
-	_, e := s.db.Exec(`INSERT INTO episodes (show_id, season, episode, title, file_path, size_bytes, duration_sec, broken)
+	res, e := s.db.Exec(`INSERT INTO episodes (show_id, season, episode, title, file_path, size_bytes, duration_sec, broken)
 		VALUES (?,?,?,?,?,?,?,?)`, show.ID, season, eNum, title, rel, size, dur, boolInt(broken))
 	if e != nil {
 		fmt.Println("insert episode:", e)
 		return false
+	}
+	if eid, e := res.LastInsertId(); e == nil {
+		s.checkMedia("episode", eid)
 	}
 	return true
 }
@@ -552,6 +561,7 @@ func (s *Server) pruneEpisodes(showDir string) error {
 		if full, err := resolveRel(s.conf.MediaDir, rel); err != nil || !fileExists(full) {
 			s.db.Exec(`DELETE FROM episodes WHERE id=?`, id)
 			s.db.Exec(`DELETE FROM progress WHERE media_kind='episode' AND media_id=?`, id)
+			s.db.Exec(`DELETE FROM media_checks WHERE kind='episode' AND media_id=?`, id)
 		}
 	}
 	// prune shows with no episodes

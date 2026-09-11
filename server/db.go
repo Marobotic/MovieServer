@@ -190,6 +190,27 @@ CREATE TABLE IF NOT EXISTS requests (
 	tmdb_id    INTEGER NOT NULL DEFAULT 0,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS media_checks (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	kind          TEXT NOT NULL,
+	media_id      INTEGER NOT NULL,
+	size          INTEGER NOT NULL DEFAULT 0,
+	mtime         INTEGER NOT NULL DEFAULT 0,
+	state         TEXT NOT NULL,
+	reason        TEXT NOT NULL DEFAULT '',
+	container     TEXT NOT NULL DEFAULT '',
+	vcodec        TEXT NOT NULL DEFAULT '',
+	pix_fmt       TEXT NOT NULL DEFAULT '',
+	width         INTEGER NOT NULL DEFAULT 0,
+	height        INTEGER NOT NULL DEFAULT 0,
+	hdr           INTEGER NOT NULL DEFAULT 0,
+	acodec        TEXT NOT NULL DEFAULT '',
+	channels      INTEGER NOT NULL DEFAULT 0,
+	audio_langs   TEXT NOT NULL DEFAULT '',
+	duration_sec  INTEGER NOT NULL DEFAULT 0,
+	checked_at    DATETIME,
+	UNIQUE(kind, media_id)
+);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
