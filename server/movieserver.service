@@ -4,14 +4,18 @@ After=network.target
 
 [Service]
 Type=simple
+User=maro
 WorkingDirectory=/home/maro/Work/MovieServer/server
 ExecStart=/home/maro/Work/MovieServer/server/movieserver
 Restart=on-failure
 RestartSec=3
+Nice=5
+StandardOutput=journal
+StandardError=journal
 
 # The server listens on :8080 for family devices on the LAN.
 # Uncomment and adjust if you want it bound to a specific interface.
 # Environment=MOVIESERVER=...
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
