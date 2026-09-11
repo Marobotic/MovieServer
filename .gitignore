@@ -1,0 +1,16 @@
+# Go
+server/movieserver
+server/data/
+# Secrets (TMDB/OpenSubtitles keys + JWT secret) must never reach git.
+server/config.json
+
+# Flutter
+app_flutter/build/
+app_flutter/.dart_tool/
+app_flutter/.flutter-plugins*
+app_flutter/android/app/.cxx/
+app_flutter/ios/Pods/
+
+# Misc
+*.log
+.DS_Store
