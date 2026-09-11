@@ -18,6 +18,7 @@ type User struct {
 	Password    string    `json:"-"`
 	Role        string    `json:"role"`
 	AvatarColor string    `json:"avatar_color"`
+	AudioLang   string    `json:"audio_lang,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -207,6 +208,7 @@ func runMigrations(db *sql.DB) error {
 		`ALTER TABLE episodes ADD COLUMN file_title TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_progress_user ON progress(user_id, updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_episodes_show ON episodes(show_id, season, episode)`,
+		`ALTER TABLE users ADD COLUMN audio_lang TEXT NOT NULL DEFAULT 'eng'`,
 	}
 	for i := ver; i < len(steps); i++ {
 		if _, err := db.Exec(steps[i]); err != nil {

@@ -61,7 +61,9 @@ class Api {
     user = u;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenKey, t);
-    await prefs.setString(_userKey, jsonEncode({
+    await prefs.setString(
+        _userKey,
+        jsonEncode({
           'id': u.id,
           'username': u.username,
           'role': u.role,
@@ -102,15 +104,24 @@ class Api {
     final headers = authFree ? {'Content-Type': 'application/json'} : _headers;
     http.Response? resp;
     if (method == 'GET') {
-      resp = await http.get(uri, headers: headers).timeout(const Duration(seconds: 30));
+      resp = await http
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 30));
     } else if (method == 'DELETE') {
-      resp = await http.delete(uri, headers: headers).timeout(const Duration(seconds: 30));
+      resp = await http
+          .delete(uri, headers: headers)
+          .timeout(const Duration(seconds: 30));
     } else if (method == 'PATCH') {
-      resp = await http.patch(uri,
-          headers: headers, body: body is String ? body : jsonEncode(body ?? {})).timeout(const Duration(seconds: 30));
+      resp = await http
+          .patch(uri,
+              headers: headers,
+              body: body is String ? body : jsonEncode(body ?? {}))
+          .timeout(const Duration(seconds: 30));
     } else {
-      resp = await http.post(uri,
-              headers: headers, body: body is String ? body : jsonEncode(body ?? {}))
+      resp = await http
+          .post(uri,
+              headers: headers,
+              body: body is String ? body : jsonEncode(body ?? {}))
           .timeout(const Duration(seconds: 60));
     }
     final text = utf8.decode(resp.bodyBytes);
@@ -130,7 +141,8 @@ class Api {
   // ---- capabilities & auth ----
 
   Future<Map<String, dynamic>> capabilities() async =>
-      Map<String, dynamic>.from(await _request('GET', '/api/capabilities', authFree: true));
+      Map<String, dynamic>.from(
+          await _request('GET', '/api/capabilities', authFree: true));
 
   Future<void> setup(String username, String password) async {
     final r = await _request('POST', '/api/auth/setup',
@@ -178,11 +190,16 @@ class Api {
     return User.fromJson(r);
   }
 
-  Future<void> updateUser(int id, {String? password, String? role, String? avatarColor}) async {
+  Future<void> updateUser(int id,
+      {String? password,
+      String? role,
+      String? avatarColor,
+      String? audioLang}) async {
     await _request('PUT', '/api/users/$id', body: {
       if (password != null) 'password': password,
       if (role != null) 'role': role,
       if (avatarColor != null) 'avatar_color': avatarColor,
+      if (audioLang != null) 'audio_lang': audioLang,
     });
   }
 
@@ -200,7 +217,8 @@ class Api {
     return (r as List).map((e) => Show.fromJson(e)).toList();
   }
 
-  Future<Movie> movie(int id) async => Movie.fromJson(await _request('GET', '/api/movies/$id'));
+  Future<Movie> movie(int id) async =>
+      Movie.fromJson(await _request('GET', '/api/movies/$id'));
 
   Future<ShowDetail> showDetail(int id) async =>
       ShowDetail.fromJson(await _request('GET', '/api/shows/$id'));
@@ -218,8 +236,8 @@ class Api {
     );
   }
 
-  Future<void> saveProgress(
-      String mediaKind, int mediaId, int position, int duration, bool completed) {
+  Future<void> saveProgress(String mediaKind, int mediaId, int position,
+      int duration, bool completed) {
     return _request('POST', '/api/progress', body: {
       'media_kind': mediaKind,
       'media_id': mediaId,
@@ -229,8 +247,8 @@ class Api {
     });
   }
 
-  Future<void> clearProgress(String mediaKind, int mediaId) =>
-      _request('DELETE', '/api/progress?media_kind=$mediaKind&media_id=$mediaId');
+  Future<void> clearProgress(String mediaKind, int mediaId) => _request(
+      'DELETE', '/api/progress?media_kind=$mediaKind&media_id=$mediaId');
 
   // ---- streaming ----
 
@@ -332,7 +350,8 @@ class Api {
       Map<String, dynamic>.from(await _request('POST', '/api/admin/subs'));
 
   Future<List<TMDbHit>> tmdbSearch(String query, String type) async {
-    final r = await _request('GET', '/api/admin/tmdb/search', query: {'q': query, 'type': type});
+    final r = await _request('GET', '/api/admin/tmdb/search',
+        query: {'q': query, 'type': type});
     return (r as List).map((e) => TMDbHit.fromJson(e)).toList();
   }
 

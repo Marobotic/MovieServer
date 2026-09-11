@@ -121,10 +121,10 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 // ---- user helpers ----
 
 func (s *Server) getUserByID(id int64) (*User, error) {
-	row := s.db.QueryRow(`SELECT id, username, password_hash, role, avatar_color, created_at FROM users WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, username, password_hash, role, avatar_color, audio_lang, created_at FROM users WHERE id = ?`, id)
 	u := &User{}
 	var created string
-	err := row.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &u.AvatarColor, &created)
+	err := row.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &u.AvatarColor, &u.AudioLang, &created)
 	if err != nil {
 		return nil, err
 	}
@@ -230,9 +230,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 // platformCapabilities lets clients know this instance is ready.
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"needs_setup": s.userCount() == 0,
+		"needs_setup":     s.userCount() == 0,
 		"tmdb_configured": s.conf.TMDbAPIKey != "",
-		"version":    s.version,
+		"version":         s.version,
 	})
 }
 

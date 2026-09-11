@@ -3,12 +3,14 @@ class User {
   final String username;
   final String role;
   final String avatarColor;
+  final String audioLang;
 
   const User({
     required this.id,
     required this.username,
     required this.role,
     required this.avatarColor,
+    this.audioLang = 'eng',
   });
 
   bool get isAdmin => role == 'admin';
@@ -18,6 +20,7 @@ class User {
         username: j['username'] ?? '',
         role: j['role'] ?? 'viewer',
         avatarColor: j['avatar_color'] ?? '#E50914',
+        audioLang: j['audio_lang'] ?? 'eng',
       );
 }
 
@@ -121,7 +124,8 @@ class Episode {
     required this.completed,
   });
 
-  String get label => completed ? 'Watched' : (positionSec > 0 ? 'Continue' : '');
+  String get label =>
+      completed ? 'Watched' : (positionSec > 0 ? 'Continue' : '');
 
   factory Episode.fromJson(Map<String, dynamic> j) => Episode(
         id: j['id'],
@@ -148,9 +152,8 @@ class ShowDetail {
 
   factory ShowDetail.fromJson(Map<String, dynamic> j) => ShowDetail(
         show: Show.fromJson(j['show']),
-        episodes: (j['episodes'] as List)
-            .map((e) => Episode.fromJson(e))
-            .toList(),
+        episodes:
+            (j['episodes'] as List).map((e) => Episode.fromJson(e)).toList(),
       );
 }
 
@@ -303,7 +306,9 @@ class MediaTracks {
 
   const MediaTracks({required this.subtitles, required this.audio});
 
-  const MediaTracks.empty() : subtitles = const [], audio = const [];
+  const MediaTracks.empty()
+      : subtitles = const [],
+        audio = const [];
 
   factory MediaTracks.fromJson(Map<String, dynamic> j) => MediaTracks(
         subtitles: (j['subtitles'] as List)

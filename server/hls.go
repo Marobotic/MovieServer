@@ -63,6 +63,16 @@ func hlsJobKey(kind string, id, start int) string {
 	return fmt.Sprintf("%s-%d-%d", kind, id, start)
 }
 
+// hlsFullKey extends the job key with the chosen audio stream index so
+// different audio selections get separate jobs (and segments).
+func hlsFullKey(kind string, id, start, audioIdx int) string {
+	key := hlsJobKey(kind, id, start)
+	if audioIdx >= 0 {
+		key = fmt.Sprintf("%s-a%d", key, audioIdx)
+	}
+	return key
+}
+
 // killJob terminates an ffmpeg job. The reaper goroutine owned by the job
 // calls Wait(), which prevents zombies; killJob never blocks on Wait.
 func killJob(j *hlsJob) {
@@ -236,8 +246,9 @@ func (s *Server) waitForSegments(job *hlsJob) error {
 }
 
 // ensureHLSJob starts (or reuses) an ffmpeg job producing HLS for the item and
-// blocks until the first segment is ready.
-func (s *Server) ensureHLSJob(kind string, id, start int) (string, error) {
+// blocks until the first segment is ready. audioIdx selects one audio stream
+// (-map 0:a:audioIdx); -1 maps all audio streams.
+func (s *Server) ensureHLSJob(kind string, id, start int, audioIdx int) (string, error) {
 	hlsInit()
 	if ffmpegBin == "" {
 		return "", fmt.Errorf("ffmpeg not found")
@@ -248,7 +259,7 @@ func (s *Server) ensureHLSJob(kind string, id, start int) (string, error) {
 		return "", err
 	}
 
-	key := hlsJobKey(kind, id, start)
+	key := hlsFullKey(kind, id, start, audioIdx)
 	hlsMu.Lock()
 	if j, ok := hlsJobs[key]; ok {
 		if j.starting {
@@ -293,7 +304,7 @@ func (s *Server) ensureHLSJob(kind string, id, start int) (string, error) {
 		s.dropHLSJob(key)
 		return "", err
 	}
-	cmd, err := s.startFFmpegHLS(full, dir, start, copyVideo, copyAudio, logF)
+	cmd, err := s.startFFmpegHLS(full, dir, start, copyVideo, copyAudio, audioIdx, logF)
 	if err != nil {
 		logF.Close()
 		os.RemoveAll(dir)
@@ -354,21 +365,26 @@ func (s *Server) dropHLSJob(key string) {
 }
 
 // startFFmpegHLS builds and starts the ffmpeg command for one HLS job.
-func (s *Server) startFFmpegHLS(full, dir string, start int, copyVideo, copyAudio bool, logF *os.File) (*exec.Cmd, error) {
+// audioIdx >= 0 maps only that audio stream (0:a:audioIdx), -1 maps all.
+func (s *Server) startFFmpegHLS(full, dir string, start int, copyVideo, copyAudio bool, audioIdx int, logF *os.File) (*exec.Cmd, error) {
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
 	if start > 0 {
 		args = append(args, "-ss", strconv.Itoa(start))
 	}
 	args = append(args, "-i", full)
+	aMap := []string{"-map", "0:a?"}
+	if audioIdx >= 0 {
+		aMap = []string{"-map", fmt.Sprintf("0:a:%d", audioIdx)}
+	}
 	switch {
 	case copyVideo && copyAudio:
-		args = append(args, "-map", "0:v:0", "-map", "0:a?", "-c:v", "copy", "-c:a", "copy")
+		args = append(args, "-map", "0:v:0", aMap[0], aMap[1], "-c:v", "copy", "-c:a", "copy")
 	case copyVideo:
-		args = append(args, "-map", "0:v:0", "-map", "0:a?",
+		args = append(args, "-map", "0:v:0", aMap[0], aMap[1],
 			"-c:v", "copy",
 			"-c:a", "aac", "-b:a", "128k")
 	default:
-		args = append(args, "-map", "0:v:0", "-map", "0:a?",
+		args = append(args, "-map", "0:v:0", aMap[0], aMap[1],
 			"-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
 			"-c:a", "aac", "-b:a", "128k")
 	}
@@ -390,7 +406,6 @@ func (s *Server) startFFmpegHLS(full, dir string, start int, copyVideo, copyAudi
 // segment URLs so browser players can fetch everything themselves.
 func (s *Server) handleHLSMaster(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
-	_ = u
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
@@ -417,13 +432,24 @@ func (s *Server) handleHLSMaster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir, err := s.ensureHLSJob(kind, int(id), start)
+	audioIdx := -1
+	full, err := s.resolveMediaFile(kind, id)
+	if err == nil {
+		var pref string
+		if u != nil {
+			pref = u.AudioLang
+		}
+		audioIdx = preferredAudioIndex(audioTracksFor(full), pref)
+	}
+
+	key := hlsFullKey(kind, int(id), start, audioIdx)
+	dir, err := s.ensureHLSJob(kind, int(id), start, audioIdx)
 	if err != nil {
 		writeError(w, 500, "transcoding failed: "+err.Error())
 		return
 	}
 	hlsMu.Lock()
-	if j, ok := hlsJobs[hlsJobKey(kind, int(id), start)]; ok {
+	if j, ok := hlsJobs[key]; ok {
 		j.lastAccess = time.Now()
 	}
 	hlsMu.Unlock()
@@ -433,7 +459,6 @@ func (s *Server) handleHLSMaster(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "playlist not ready")
 		return
 	}
-	key := hlsJobKey(kind, int(id), start)
 	lines := strings.Split(string(data), "\n")
 	for i, ln := range lines {
 		if strings.HasPrefix(ln, "seg_") {

@@ -368,7 +368,9 @@ func audioTracksFor(full string) []audioTrack {
 						name = lang
 					}
 					tracks = append(tracks, audioTrack{
-						Index:    s.Index,
+						// Position within the audio list (0-based), matching
+						// ffmpeg -map 0:a:N and the native player's track list.
+						Index:    i,
 						Language: lang,
 						Title:    name,
 						Default:  i == 0,
@@ -381,6 +383,45 @@ func audioTracksFor(full string) []audioTrack {
 	trackCache[key] = trackCacheEntry{tracks: tracks, probedAt: time.Now()}
 	trackCacheMu.Unlock()
 	return tracks
+}
+
+// preferredAudioIndex returns the 0-based position (within the audio stream
+// list; ffmpeg -map 0:a:N uses this) whose language best matches the user
+// preference, falling back eng -> ara -> first track. -1 means no audio.
+func preferredAudioIndex(tracks []audioTrack, pref string) int {
+	if len(tracks) == 0 {
+		return -1
+	}
+	want := strings.ToLower(strings.TrimSpace(pref))
+	if want == "" {
+		want = "eng"
+	}
+	order := []string{want}
+	for _, c := range []string{"eng", "ara", "en", "ar"} {
+		if c != want && !contains(order, c) {
+			order = append(order, c)
+		}
+	}
+	norm := func(l string) string {
+		return strings.ToLower(strings.TrimSpace(strings.SplitN(l, "-", 2)[0]))
+	}
+	for _, o := range order {
+		for i, t := range tracks {
+			if norm(t.Language) == o {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleTracks(w http.ResponseWriter, r *http.Request) {

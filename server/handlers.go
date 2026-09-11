@@ -60,7 +60,7 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(`SELECT id, username, role, avatar_color, created_at FROM users ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, username, role, avatar_color, audio_lang, created_at FROM users ORDER BY id`)
 	if err != nil {
 		writeError(w, 500, "db error")
 		return
@@ -70,7 +70,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u User
 		var created string
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.AvatarColor, &created); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.AvatarColor, &u.AudioLang, &created); err != nil {
 			writeError(w, 500, "db error")
 			return
 		}
@@ -128,6 +128,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Password    *string `json:"password"`
 		Role        *string `json:"role"`
 		AvatarColor *string `json:"avatar_color"`
+		AudioLang   *string `json:"audio_lang"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, 400, "invalid body")
@@ -168,6 +169,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		color = *req.AvatarColor
 		updates = append(updates, "avatar_color=?")
 		args = append(args, color)
+	}
+	if req.AudioLang != nil {
+		updates = append(updates, "audio_lang=?")
+		args = append(args, *req.AudioLang)
 	}
 	if len(updates) == 0 {
 		writeError(w, 400, "nothing to update")

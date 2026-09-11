@@ -124,9 +124,38 @@ class _WatchScreenState extends State<WatchScreen> {
       _offset = startAt;
     } else {
       await _controller.open(url, startAt: startAt);
+      await _loadTracks();
+      _applyPreferredAudio();
     }
     await _controller.play();
     _startProgressTimer();
+  }
+
+  // Native players pick the audio stream by the profile's preferred language
+  // (default eng) instead of defaulting to whatever stream is first in the
+  // file (e.g. an Italian dub).
+  Future<void> _applyPreferredAudio() async {
+    if (kIsWeb) return;
+    if (_tracks.audio.isEmpty) return;
+    try {
+      final me = await _api.me();
+      final pref = (me?.audioLang ?? 'eng').toLowerCase();
+      AudioTrackInfo? chosen;
+      for (final lang in [pref, 'eng', 'ara']) {
+        for (final t in _tracks.audio) {
+          if (t.language.toLowerCase() == lang) {
+            chosen = t;
+            break;
+          }
+        }
+        if (chosen != null) break;
+      }
+      final track = chosen;
+      if (track != null) {
+        _controller.setAudioTrack(track.index);
+        setState(() => _activeAudio = track.index);
+      }
+    } catch (_) {}
   }
 
   // On web, jumping in the timeline restarts the HLS job at the target offset
