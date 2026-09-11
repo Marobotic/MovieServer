@@ -299,11 +299,20 @@ func (s *Server) storeCheck(kind string, id int64, c mediaCheck) {
 }
 
 func (s *Server) getCheck(kind string, id int64) *mediaCheck {
-	row := s.db.QueryRow(`SELECT size, mtime FROM media_checks WHERE kind=? AND media_id=?`, kind, id)
+	row := s.db.QueryRow(`SELECT size, mtime, state, COALESCE(reason,''), container,
+		vcodec, pix_fmt, width, height, hdr, acodec, channels,
+		COALESCE(audio_langs,''), duration_sec, COALESCE(checked_at,'')
+		FROM media_checks WHERE kind=? AND media_id=?`, kind, id)
 	c := &mediaCheck{}
-	if err := row.Scan(&c.Size, &c.MTime); err != nil {
+	var hdr int
+	if err := row.Scan(&c.Size, &c.MTime, &c.State, &c.Reason, &c.Container,
+		&c.VCodec, &c.PixFmt, &c.Width, &c.Height, &hdr, &c.ACodec, &c.Channels,
+		&c.AudioLangs, &c.DurationSec, &c.CheckedAt); err != nil {
 		return nil
 	}
+	c.HDR = hdr != 0
+	c.Kind = kind
+	c.MediaID = id
 	return c
 }
 

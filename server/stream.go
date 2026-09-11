@@ -50,6 +50,10 @@ func (s *Server) handleMovieStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "movie not found")
 		return
 	}
+	if r.URL.Query().Get("variant") == "web" {
+		s.serveVideoFile(w, r, webcopyPath(s.conf.DataDir, "movie", id))
+		return
+	}
 	full, err := resolveRel(s.conf.MediaDir, m.FilePath)
 	if err != nil {
 		writeError(w, 404, "file missing")
@@ -68,6 +72,10 @@ func (s *Server) handleEpisodeStream(w http.ResponseWriter, r *http.Request) {
 	e, err := s.getEpisode(id)
 	if err != nil {
 		writeError(w, 404, "episode not found")
+		return
+	}
+	if r.URL.Query().Get("variant") == "web" {
+		s.serveVideoFile(w, r, webcopyPath(s.conf.DataDir, "episode", id))
 		return
 	}
 	full, err := resolveRel(s.conf.MediaDir, e.FilePath)

@@ -158,6 +158,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("HEAD /api/movies/{id}/stream", s.authMiddleware(s.handleMovieStream))
 	mux.HandleFunc("GET /api/episodes/{id}/stream", s.authMiddleware(s.handleEpisodeStream))
 	mux.HandleFunc("HEAD /api/episodes/{id}/stream", s.authMiddleware(s.handleEpisodeStream))
+	mux.HandleFunc("GET /api/movies/{id}/playback", s.authMiddleware(s.handlePlayback))
+	mux.HandleFunc("GET /api/episodes/{id}/playback", s.authMiddleware(s.handlePlayback))
 
 	// HLS transcoding (browsers cannot play MKV/HEVC directly)
 	mux.HandleFunc("GET /api/movies/{id}/hls/master.m3u8", s.authMiddleware(s.handleHLSMaster))
