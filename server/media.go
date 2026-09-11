@@ -173,10 +173,10 @@ func subtitleExt(s string) bool {
 }
 
 type subFile struct {
-	Path   string
-	Lang   string
-	Code   string
-	Name   string
+	Path string
+	Lang string
+	Code string
+	Name string
 }
 
 // findSubtitles scans an item folder for external subtitle files.
@@ -350,8 +350,8 @@ func audioTracksFor(full string) []audioTrack {
 		if perr == nil {
 			var res struct {
 				Streams []struct {
-					Index    int    `json:"index"`
-					Tags     struct {
+					Index int `json:"index"`
+					Tags  struct {
 						Language string `json:"language"`
 						Title    string `json:"title"`
 					} `json:"tags"`
@@ -406,7 +406,9 @@ func (s *Server) handleTracks(w http.ResponseWriter, r *http.Request) {
 }
 
 // setLocalArt stores user-supplied artwork URLs in the DB (preferred over TMDB).
-func (s *Server) setLocalArt(kind string, id int64, dir string) {
+// When stem is non-empty (a loose file in a shared folder), only art named like
+// "<stem>-poster.jpg" is accepted so one poster does not leak across movies.
+func (s *Server) setLocalArt(kind string, id int64, dir string, stem string) {
 	var table, posterCol, backdropCol string
 	switch kind {
 	case "movie":
@@ -419,10 +421,17 @@ func (s *Server) setLocalArt(kind string, id int64, dir string) {
 		return
 	}
 	artBase := "/api/" + kindPlural(kind) + "/" + strconv.FormatInt(id, 10) + "/art"
-	if _, ok := findArtFile(dir, []string{"poster", "folder"}); ok {
+	posterNames := []string{"poster", "folder"}
+	backdropNames := []string{"backdrop", "fanart"}
+	if stem != "" {
+		stem = strings.ToLower(stem)
+		posterNames = []string{stem + "-poster", stem + "-folder"}
+		backdropNames = []string{stem + "-backdrop", stem + "-fanart"}
+	}
+	if _, ok := findArtFile(dir, posterNames); ok {
 		s.db.Exec(fmt.Sprintf("UPDATE %s SET %s=? WHERE id=?", table, posterCol), artBase+"/poster", id)
 	}
-	if _, ok := findArtFile(dir, []string{"backdrop", "fanart"}); ok && kind != "episode" {
+	if _, ok := findArtFile(dir, backdropNames); ok && kind != "episode" {
 		s.db.Exec(fmt.Sprintf("UPDATE %s SET %s=? WHERE id=?", table, backdropCol), artBase+"/backdrop", id)
 	}
 }

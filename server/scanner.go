@@ -156,7 +156,8 @@ func (s *Server) scanMovies(dir string) (map[string]bool, error) {
 			}
 			s.upsertMovie(startMovie(title, year, full, 0), false)
 			if id := s.movieIDByPath(relPath(s.conf.MediaDir, full)); id != 0 {
-				s.setLocalArt("movie", id, dir)
+				stem := strings.TrimSuffix(filepath.Base(full), filepath.Ext(filepath.Base(full)))
+				s.setLocalArt("movie", id, dir, stem)
 			}
 			seen[relPath(s.conf.MediaDir, full)] = true
 		}
@@ -197,7 +198,7 @@ func (s *Server) scanMovieDir(dir, name string) bool {
 	}
 	s.upsertMovie(startMovie(title, year, best, 0), false)
 	if id := s.movieIDByPath(relPath(s.conf.MediaDir, best)); id != 0 {
-		s.setLocalArt("movie", id, dir)
+		s.setLocalArt("movie", id, dir, "")
 	}
 	return true
 }
@@ -397,7 +398,7 @@ func (s *Server) scanShows(dir string) (int, int, error) {
 		}
 		epCount += n
 		found++
-		s.setLocalArt("show", show.ID, showDir)
+		s.setLocalArt("show", show.ID, showDir, "")
 	}
 	return found, epCount, nil
 }
