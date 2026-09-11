@@ -63,7 +63,7 @@ class _WatchScreenState extends State<WatchScreen> {
   }
 
   Future<void> _open() async {
-    final api = context.read<Api>();
+    final api = _api;
     String url;
     Duration startAt = Duration.zero;
     if (widget.item.externalUrl != null && widget.externalUrl != null) {
@@ -127,6 +127,31 @@ class _WatchScreenState extends State<WatchScreen> {
     }
     await _controller.play();
     _startProgressTimer();
+  }
+
+  // On web, jumping in the timeline restarts the HLS job at the target offset
+  // because a live/event playlist cannot be sought ahead of what ffmpeg has
+  // already produced. The server's transcoder is fast, so this is noticable
+  // only as a brief rebuffer.
+  Future<void> _webSeek(int targetSec) async {
+    if (!kIsWeb) {
+      final rel = targetSec - _offset.inSeconds;
+      _controller.seek(Duration(seconds: rel < 0 ? 0 : rel));
+      return;
+    }
+    setState(() => _buffering = true);
+    try {
+      await _controller.open(
+        _api.hlsUrl(widget.item.mediaKind, widget.item.mediaId,
+            startSeconds: targetSec),
+        startAt: Duration.zero,
+      );
+      _offset = Duration(seconds: targetSec);
+      await _controller.play();
+    } catch (_) {}
+    if (mounted) {
+      setState(() => _buffering = false);
+    }
   }
 
   Future<void> _loadTracks() async {
@@ -461,9 +486,7 @@ class _WatchScreenState extends State<WatchScreen> {
                         },
                         onChangeEnd: (v) {
                           final target = (v * _effectiveSec).round();
-                          final rel = target - _offset.inSeconds;
-                          _controller
-                              .seek(Duration(seconds: rel < 0 ? 0 : rel));
+                          _webSeek(target);
                         },
                       ),
                       Row(
@@ -472,12 +495,7 @@ class _WatchScreenState extends State<WatchScreen> {
                             color: Colors.white,
                             icon: const Icon(Icons.replay_10),
                             onPressed: () {
-                              final t = _position - const Duration(seconds: 10);
-                              if (t.isNegative) {
-                                _controller.seek(Duration.zero);
-                              } else {
-                                _controller.seek(t);
-                              }
+                              _webSeek(_realSec - 10);
                             },
                           ),
                           IconButton(
@@ -497,8 +515,7 @@ class _WatchScreenState extends State<WatchScreen> {
                             color: Colors.white,
                             icon: const Icon(Icons.forward_10),
                             onPressed: () {
-                              _controller.seek(
-                                  _position + const Duration(seconds: 10));
+                              _webSeek(_realSec + 10);
                             },
                           ),
                           IconButton(
