@@ -92,18 +92,24 @@ flutter build apk --release       # needs Android SDK
   (async goroutine, throttled ~1.2s/item, skips files that already exist next
   to the video as `<stem>.<lang>.srt`). Subtitle timing can be offset from the
   app via mpv `sub-delay` (native players only; see `sub_delay_io.dart`).
-- Video playback: native apps use Range-based direct play
-  (`/api/{kind}/{id}/stream`); the web app uses on-the-fly HLS
-  (`/api/{kind}/{id}/hls/master.m3u8`, segments under `/api/hls/{job}/{file}`).
-  The live HLS path only remuxes **H.264** video (`-c:v copy`) and always
-  re-encodes audio to **stereo AAC** (`-c:a aac -ac 2`): Chromium's MSE rejects
-  multichannel AAC, so never feed it 5.1/7.1. Non-H.264 video (HEVC/AV1/etc.)
-  returns `409 {"decision":"needs_encode",...}` from the master endpoint - the
-  live path never encodes video. ffmpeg jobs live in `<data_dir>/hls` and are
-  janitor-garbage-collected. Requires ffmpeg/ffprobe on the server. Audio/
-  subtitle switching in the app is media_kit-native only (no-op on web).
-- Token auth via `Authorization: Bearer` header; stream + HLS + subtitle
-  endpoints also accept `?token=` for browser players.
+- Video playback: before playing, the app calls
+  `GET /api/{movies|episodes}/{id}/playback?client=web|native` (preflight).
+  It decides against the `media_checks` classification and answers
+  `play` (with a `url` + `variant` original|web), `needs_quick_fix`,
+  `needs_encode`, `preparing`, `damaged`, or `still_copying`, with an
+  `estimate` (cpu remux minutes / gpu encode minutes+GB) and `native_ok`.
+  Web `play` serves the file over Range (`/stream`); `variant=web` serves
+  `<data_dir>/webcopies/<kind>-<id>.mp4` (created by prepare jobs; 404 until
+  then). Native clients always play the original unless damaged/still_copying.
+  The older on-the-fly HLS path (`/api/{kind}/{id}/hls/master.m3u8`) still
+  exists server-side: it only remuxes **H.264** video (`-c:v copy`) and always
+  re-encodes audio to **stereo AAC** (`-c:a aac -ac 2`) - Chromium's MSE
+  rejects multichannel AAC. Non-H.264 video returns
+  `409 {"decision":"needs_encode",...}`; the live path never encodes video.
+  ffmpeg jobs live in `<data_dir>/hls` and are janitor-garbage-collected.
+  Audio/subtitle switching in the app is media_kit-native only (no-op on web).
+- Token auth via `Authorization: Bearer` header; stream + HLS + playback +
+  subtitle endpoints also accept `?token=` for browser players.
 - Empty list endpoints must marshal as `[]`, never `null` (Dart casts results
   to `List`). Initialize slices with `make([]T, 0)`.
 - No comments in code unless asked.
