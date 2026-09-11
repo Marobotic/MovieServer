@@ -60,10 +60,9 @@ flutter build apk --release       # needs Android SDK
   add it to PATH).
 - Flutter: `~/flutter/bin/flutter`.
 - ffmpeg/ffprobe installed (`n9.0.1`); used for HLS transcoding.
-- No Android SDK or Chrome installed; Android APK and `flutter run -d chrome`
-  cannot run locally yet.
-- way to run headless tests for the web UI: none (no Chrome); API is tested
-  with curl.
+- No Android SDK installed; Android APK and `flutter run -d chrome` cannot run
+  locally yet. Headless browser tests use `/usr/bin/chromium` via puppeteer-core
+  (harness in `~/.cache/test-movieserver/`).
 
 ## Conventions
 
@@ -94,13 +93,15 @@ flutter build apk --release       # needs Android SDK
   to the video as `<stem>.<lang>.srt`). Subtitle timing can be offset from the
   app via mpv `sub-delay` (native players only; see `sub_delay_io.dart`).
 - Video playback: native apps use Range-based direct play
-  (`/api/{kind}/{id}/stream`); the web app uses on-the-fly HLS transcoding
-  (`/api/{kind}/{id}/hls/master.m3u8`, segments under `/api/hls/{job}/{file}`)
-  because browsers can't play MKV/HEVC. HLS mode remuxes H.264/AAC (copy) and
-  transcodes other codecs (libx264). ffmpeg jobs live in
-  `$TMPDIR/movieserver-hls` and are janitor-garbage-collected. Requires
-  ffmpeg/ffprobe on the server. Audio/subtitle switching in the app is
-  media_kit-native only (no-op on web).
+  (`/api/{kind}/{id}/stream`); the web app uses on-the-fly HLS
+  (`/api/{kind}/{id}/hls/master.m3u8`, segments under `/api/hls/{job}/{file}`).
+  The live HLS path only remuxes **H.264** video (`-c:v copy`) and always
+  re-encodes audio to **stereo AAC** (`-c:a aac -ac 2`): Chromium's MSE rejects
+  multichannel AAC, so never feed it 5.1/7.1. Non-H.264 video (HEVC/AV1/etc.)
+  returns `409 {"decision":"needs_encode",...}` from the master endpoint - the
+  live path never encodes video. ffmpeg jobs live in `<data_dir>/hls` and are
+  janitor-garbage-collected. Requires ffmpeg/ffprobe on the server. Audio/
+  subtitle switching in the app is media_kit-native only (no-op on web).
 - Token auth via `Authorization: Bearer` header; stream + HLS + subtitle
   endpoints also accept `?token=` for browser players.
 - Empty list endpoints must marshal as `[]`, never `null` (Dart casts results
@@ -114,7 +115,9 @@ flutter build apk --release       # needs Android SDK
 3. `GET /api/movies`, `GET /api/shows/{id}`.
 4. `GET /api/movies/{id}/stream` with `-r 0-99` should return 206.
 5. `GET /api/movies/{id}/hls/master.m3u8?token=...` returns a playlist; its
-   segment URLs (`/api/hls/.../seg_*.ts` ) should return `video/mp2t` 200.
+   segment URLs (`/api/hls/.../seg_*.ts` ) should return `video/mp2t` 200, and
+   segments should probe as `aac,LC,48000,2` (always stereo). HEVC files return
+   `409 {"decision":"needs_encode"}` instead of a playlist.
 6. `POST /api/progress`, `GET /api/library/continue_watching`.
 7. `POST /api/requests` (viewer), `PATCH /api/requests/{id}` (admin).
 8. Unaauthenticated/unprivileged calls should 401/403.
