@@ -39,8 +39,10 @@ Loose files dropped into `Movies/` keep working (scanner handles both), but
 running `-organize` keeps the library tidy. It runs on the strict name cleaner
 in `scanner.go` (release tags, groups, brackets stripped).
 
-Restart pattern on this machine: `pkill -x movieserver; setsid -f ./movieserver
->/tmp/opencode/server.log 2>&1` (run from `server/`).
+Restart pattern on this machine: `systemctl --user restart movieserver`
+(user unit at `~/.config/systemd/user/movieserver.service`, logs in journald
+via `journalctl --user -u movieserver -f`; `loginctl enable-linger maro` keeps
+it running after logout).
 
 Flutter app:
 
