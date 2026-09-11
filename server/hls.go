@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,15 +22,19 @@ import (
 type hlsJob struct {
 	dir        string
 	cmd        *exec.Cmd
+	done       chan error
+	logF       *os.File
 	lastAccess time.Time
+	starting   bool // placeholder jobs older than a moment are stale
 }
 
 var (
-	hlsMu     sync.Mutex
-	hlsJobs   = map[string]*hlsJob{}
-	hlsOnce   sync.Once
-	ffmpegBin string
-	ffprobe   string
+	hlsMu      sync.Mutex
+	hlsJobs    = map[string]*hlsJob{}
+	hlsOnce    sync.Once
+	ffmpegBin  string
+	ffprobe    string
+	hlsDataDir string
 )
 
 func hlsInit() {
@@ -40,10 +45,17 @@ func hlsInit() {
 	})
 }
 
-func hlsBaseDir() string {
-	dir := filepath.Join(os.TempDir(), "movieserver-hls")
-	os.MkdirAll(dir, 0o755)
-	return dir
+// hlsBaseDir returns the on-disk scratch dir for HLS jobs. It lives next to
+// the database (not under /tmp, which is tmpfs/RAM here). Callers pass the
+// data dir the first time so the janitor knows where to sweep.
+func (s *Server) hlsBaseDir() string {
+	hlsMu.Lock()
+	defer hlsMu.Unlock()
+	if hlsDataDir == "" {
+		hlsDataDir = filepath.Join(s.conf.DataDir, "hls")
+		os.MkdirAll(hlsDataDir, 0o755)
+	}
+	return hlsDataDir
 }
 
 // hlsJobKey produces a deterministic, start-aware key for a media item.
@@ -51,22 +63,25 @@ func hlsJobKey(kind string, id, start int) string {
 	return fmt.Sprintf("%s-%d-%d", kind, id, start)
 }
 
-// killJob terminates an ffmpeg job and reaps the process so it does not
-// remain as a zombie.
+// killJob terminates an ffmpeg job. The reaper goroutine owned by the job
+// calls Wait(), which prevents zombies; killJob never blocks on Wait.
 func killJob(j *hlsJob) {
 	if j == nil || j.cmd == nil || j.cmd.Process == nil {
 		return
 	}
 	j.cmd.Process.Kill()
-	j.cmd.Wait()
 }
 
-// hlsJanitor kills idle ffmpeg jobs so stale processes do not pile up.
+// hlsJanitor kills idle ffmpeg jobs and enforces a total scratch size cap so
+// stale processes and segments do not pile up (the dir lives on disk).
 func hlsJanitor() {
 	for range time.Tick(5 * time.Minute) {
 		hlsMu.Lock()
 		now := time.Now()
 		for k, j := range hlsJobs {
+			if j.starting {
+				continue
+			}
 			if now.Sub(j.lastAccess) > 30*time.Minute {
 				killJob(j)
 				os.RemoveAll(j.dir)
@@ -74,7 +89,72 @@ func hlsJanitor() {
 			}
 		}
 		hlsMu.Unlock()
+		if hlsDataDir != "" {
+			sweepHLSDir()
+		}
 	}
+}
+
+// sweepHLSDir enforces a 20GB cap on the HLS scratch dir, deleting the least
+// recently accessed job folders first.
+func sweepHLSDir() {
+	dirs, _ := os.ReadDir(hlsDataDir)
+	var total int64
+	type jobDir struct {
+		path string
+		at   time.Time
+	}
+	var jobs []jobDir
+	hlsMu.Lock()
+	for _, d := range dirs {
+		full := filepath.Join(hlsDataDir, d.Name())
+		var size int64
+		filepath.WalkDir(full, func(p string, de os.DirEntry, err error) error {
+			if err == nil && !de.IsDir() {
+				if fi, e := de.Info(); e == nil {
+					size += fi.Size()
+				}
+			}
+			return nil
+		})
+		at := time.Now()
+		if j, ok := hlsJobs[d.Name()]; ok && !j.starting {
+			at = j.lastAccess
+		}
+		total += size
+		jobs = append(jobs, jobDir{full, at})
+	}
+	hlsMu.Unlock()
+	if total <= 20<<30 {
+		return
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].at.Before(jobs[j].at) })
+	var freed int64
+	for _, j := range jobs {
+		if j.at.Add(5 * time.Minute).After(time.Now()) {
+			break // never delete something that is actively serving
+		}
+		os.RemoveAll(j.path)
+		freed, _ = dirSize(j.path)
+		_ = freed
+		total -= freed
+		if total <= 20<<30 {
+			break
+		}
+	}
+}
+
+func dirSize(dir string) (int64, error) {
+	var n int64
+	err := filepath.WalkDir(dir, func(p string, de os.DirEntry, err error) error {
+		if err == nil && !de.IsDir() {
+			if fi, e := de.Info(); e == nil {
+				n += fi.Size()
+			}
+		}
+		return nil
+	})
+	return n, err
 }
 
 // probeCodecs returns the codecs of the first video and audio stream.
@@ -134,6 +214,27 @@ func (s *Server) resolveMediaFile(kind string, id int64) (string, error) {
 	return "", fmt.Errorf("unknown media kind %q", kind)
 }
 
+// waitForSegments blocks until at least one non-empty segment exists or the
+// ffmpeg process exits.
+func (s *Server) waitForSegments(job *hlsJob) error {
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-job.done:
+			return fmt.Errorf("ffmpeg exited early")
+		default:
+		}
+		segs, _ := filepath.Glob(filepath.Join(job.dir, "seg_*.ts"))
+		for _, f := range segs {
+			if fi, err := os.Stat(f); err == nil && fi.Size() > 0 {
+				return nil
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for first segment")
+}
+
 // ensureHLSJob starts (or reuses) an ffmpeg job producing HLS for the item and
 // blocks until the first segment is ready.
 func (s *Server) ensureHLSJob(kind string, id, start int) (string, error) {
@@ -150,23 +251,110 @@ func (s *Server) ensureHLSJob(kind string, id, start int) (string, error) {
 	key := hlsJobKey(kind, id, start)
 	hlsMu.Lock()
 	if j, ok := hlsJobs[key]; ok {
+		if j.starting {
+			// A sibling request is starting this job; wait for it instead of
+			// launching a duplicate ffmpeg.
+			hlsMu.Unlock()
+			if !waitForReady(j) {
+				return "", fmt.Errorf("job startup failed")
+			}
+			hlsMu.Lock()
+			j, ok = hlsJobs[key]
+			if ok && !j.starting {
+				j.lastAccess = time.Now()
+				hlsMu.Unlock()
+				return j.dir, nil
+			}
+			hlsMu.Unlock()
+			return "", fmt.Errorf("job disappeared during startup")
+		}
 		j.lastAccess = time.Now()
 		hlsMu.Unlock()
 		return j.dir, nil
 	}
+	// Reserve the key immediately so concurrent requests coalesce on this
+	// single in-flight start.
+	hlsJobs[key] = &hlsJob{starting: true}
 	hlsMu.Unlock()
 
 	video, audio, err := probeCodecs(full)
 	if err != nil {
+		s.dropHLSJob(key)
 		return "", err
 	}
 	copyVideo := video == "h264"
 	copyAudio := audio == "" || audio == "aac" || audio == "mp3"
 
-	dir := filepath.Join(hlsBaseDir(), key)
+	dir := filepath.Join(s.hlsBaseDir(), key)
 	os.RemoveAll(dir)
 	os.MkdirAll(dir, 0o755)
+	logF, err := os.Create(filepath.Join(dir, "ffmpeg.log"))
+	if err != nil {
+		s.dropHLSJob(key)
+		return "", err
+	}
+	cmd, err := s.startFFmpegHLS(full, dir, start, copyVideo, copyAudio, logF)
+	if err != nil {
+		logF.Close()
+		os.RemoveAll(dir)
+		s.dropHLSJob(key)
+		return "", err
+	}
 
+	job := &hlsJob{
+		dir:        dir,
+		cmd:        cmd,
+		done:       make(chan error, 1),
+		logF:       logF,
+		lastAccess: time.Now(),
+	}
+	// The goroutine owns Wait(), so finished ffmpeg processes are reaped and
+	// never become zombies.
+	go func() {
+		err := cmd.Wait()
+		select {
+		case job.done <- err:
+		default:
+		}
+		logF.Close()
+	}()
+	hlsMu.Lock()
+	hlsJobs[key] = job
+	hlsMu.Unlock()
+
+	if s.waitForSegments(job) != nil {
+		killJob(job)
+		s.dropHLSJob(key)
+		return "", fmt.Errorf("transcoding failed, see %s/ffmpeg.log", dir)
+	}
+	return dir, nil
+}
+
+// waitForReady polls until a starting job is replaced by a real one or the
+// placeholder expires.
+func waitForReady(j *hlsJob) bool {
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		hlsMu.Lock()
+		nowStarting := j.starting
+		hlsMu.Unlock()
+		if !nowStarting {
+			return true
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return false
+}
+
+// dropHLSJob removes a key from the jobs table.
+func (s *Server) dropHLSJob(key string) {
+	hlsMu.Lock()
+	delete(hlsJobs, key)
+	hlsMu.Unlock()
+}
+
+// startFFmpegHLS builds and starts the ffmpeg command for one HLS job.
+func (s *Server) startFFmpegHLS(full, dir string, start int, copyVideo, copyAudio bool, logF *os.File) (*exec.Cmd, error) {
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
 	if start > 0 {
 		args = append(args, "-ss", strconv.Itoa(start))
@@ -176,8 +364,6 @@ func (s *Server) ensureHLSJob(kind string, id, start int) (string, error) {
 	case copyVideo && copyAudio:
 		args = append(args, "-map", "0:v:0", "-map", "0:a?", "-c:v", "copy", "-c:a", "copy")
 	case copyVideo:
-		// Video is already browser-playable (H.264); only the audio needs
-		// converting, so keep CPU cost minimal instead of re-encoding video.
 		args = append(args, "-map", "0:v:0", "-map", "0:a?",
 			"-c:v", "copy",
 			"-c:a", "aac", "-b:a", "128k")
@@ -187,60 +373,17 @@ func (s *Server) ensureHLSJob(kind string, id, start int) (string, error) {
 			"-c:a", "aac", "-b:a", "128k")
 	}
 	args = append(args,
-		"-f", "hls", "-hls_time", "10", "-hls_list_size", "0", "-hls_playlist_type", "vod",
+		"-f", "hls", "-hls_time", "10", "-hls_list_size", "0", "-hls_playlist_type", "event",
 		"-hls_segment_filename", filepath.Join(dir, "seg_%05d.ts"),
 		filepath.Join(dir, "index.m3u8"))
 
 	cmd := exec.Command(ffmpegBin, args...)
-	logF, err := os.Create(filepath.Join(dir, "ffmpeg.log"))
-	if err != nil {
-		return "", err
-	}
 	cmd.Stdout = logF
 	cmd.Stderr = logF
 	if err := cmd.Start(); err != nil {
-		logF.Close()
-		return "", err
+		return nil, err
 	}
-
-	job := &hlsJob{dir: dir, cmd: cmd, lastAccess: time.Now()}
-	hlsMu.Lock()
-	// A concurrent request for the same key wins; ours is killed.
-	if old, ok := hlsJobs[key]; ok {
-		killJob(old)
-		os.RemoveAll(old.dir)
-	}
-	hlsJobs[key] = job
-	hlsMu.Unlock()
-
-	if s.waitForSegments(job) != nil {
-		killJob(job)
-		logF.Close()
-		hlsMu.Lock()
-		delete(hlsJobs, key)
-		hlsMu.Unlock()
-		return "", fmt.Errorf("transcoding failed, see %s/ffmpeg.log", dir)
-	}
-	return dir, nil
-}
-
-// waitForSegments polls until at least one non-empty segment exists or the
-// ffmpeg process exits.
-func (s *Server) waitForSegments(job *hlsJob) error {
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if job.cmd.ProcessState != nil {
-			return fmt.Errorf("ffmpeg exited early")
-		}
-		segs, _ := filepath.Glob(filepath.Join(job.dir, "seg_*.ts"))
-		for _, f := range segs {
-			if fi, err := os.Stat(f); err == nil && fi.Size() > 0 {
-				return nil
-			}
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return fmt.Errorf("timed out waiting for first segment")
+	return cmd, nil
 }
 
 // handleHLSMaster starts the job and serves the playlist with token-bearing

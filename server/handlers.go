@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +30,6 @@ func readJSON(r *http.Request, v interface{}) error {
 	defer r.Body.Close()
 	return json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(v)
 }
-
 
 // ---- users ----
 
@@ -273,9 +273,9 @@ func (s *Server) handleShowDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	type jsonEp struct {
 		Episode
-		Position       int64 `json:"position_sec"`
-		Progressed     int64 `json:"watched_sec"`
-		Completed      bool  `json:"completed"`
+		Position   int64 `json:"position_sec"`
+		Progressed int64 `json:"watched_sec"`
+		Completed  bool  `json:"completed"`
 	}
 	out := make([]jsonEp, 0, len(eps))
 	for _, e := range eps {
@@ -429,22 +429,52 @@ func tmdbThumb(path, size string) string {
 	return posterURL(path, size)
 }
 
-// handleUpload stores a video file into the library and rescans.
+// handleUpload streams a video file into the library and rescans.
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	kind := r.FormValue("kind")
+	mr, err := r.MultipartReader()
+	if err != nil {
+		writeError(w, 400, "not a multipart upload")
+		return
+	}
+	kind := ""
+	showTitle := ""
+	season := ""
+	// first pass the message parts until we have the fields; the file part is
+	// streamed directly to disk instead of being buffered in RAM.
+	var filePart *multipart.Part
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			writeError(w, 400, "malformed upload")
+			return
+		}
+		if p.FormName() == "file" {
+			filePart = p
+			break
+		}
+		switch p.FormName() {
+		case "kind":
+			kind = readPartValue(p)
+		case "show_title":
+			showTitle = readPartValue(p)
+		case "season":
+			season = readPartValue(p)
+		}
+	}
 	if kind != "movie" && kind != "show" {
 		writeError(w, 400, "kind must be movie or show")
 		return
 	}
-	r.ParseMultipartForm(1 << 30) // allow up to 1GB in RAM, streams remainder to disk
-	file, header, err := r.FormFile("file")
-	if err != nil {
+	if filePart == nil {
 		writeError(w, 400, "file part missing")
 		return
 	}
-	defer file.Close()
+	defer filePart.Close()
 
-	name := filepath.Base(header.Filename)
+	name := filepath.Base(filePart.FileName())
 	if !isVideo(name) {
 		writeError(w, 400, "not a video file")
 		return
@@ -455,9 +485,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		dest = filepath.Join(s.conf.MediaDir, "Movies", name)
 		os.MkdirAll(filepath.Dir(dest), 0o755)
 	} else {
-		showTitle := strings.TrimSpace(r.FormValue("show_title"))
-		season := r.FormValue("season")
-		if showTitle == "" {
+		if strings.TrimSpace(showTitle) == "" {
 			writeError(w, 400, "show_title required for shows")
 			return
 		}
@@ -471,19 +499,43 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		dest = filepath.Join(s.conf.MediaDir, "Shows", showTitle, sub, name)
 		os.MkdirAll(filepath.Dir(dest), 0o755)
 	}
+	if _, err := os.Stat(dest); err == nil {
+		writeError(w, 409, "a file with that name already exists")
+		return
+	}
 
-	out, err := os.Create(dest)
+	part := dest + ".part"
+	out, err := os.Create(part)
 	if err != nil {
 		writeError(w, 500, "cannot create file")
 		return
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, file); err != nil {
+	if _, err := io.Copy(out, filePart); err != nil {
+		out.Close()
+		os.Remove(part)
 		writeError(w, 500, "upload failed")
+		return
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(part)
+		writeError(w, 500, "upload failed")
+		return
+	}
+	out.Close()
+	if err := os.Rename(part, dest); err != nil {
+		os.Remove(part)
+		writeError(w, 500, "cannot finalize upload")
 		return
 	}
 	res, _ := s.scanLibrary()
 	writeJSON(w, 200, res)
+}
+
+// readPartValue drains a form value part to a string.
+func readPartValue(p *multipart.Part) string {
+	b, _ := io.ReadAll(io.LimitReader(p, 1<<20))
+	return string(b)
 }
 
 // ---- requests ----
