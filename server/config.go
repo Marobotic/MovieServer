@@ -10,17 +10,17 @@ import (
 
 // ServerConfig holds all runtime configuration.
 type ServerConfig struct {
-	Port         int    `json:"port"`
-	MediaDir     string `json:"media_dir"`
-	DataDir      string `json:"data_dir"`
-	JWTSecret    string `json:"jwt_secret"`
-	TMDbAPIKey   string `json:"tmdb_api_key,omitempty"`
+	Port          int    `json:"port"`
+	MediaDir      string `json:"media_dir"`
+	DataDir       string `json:"data_dir"`
+	JWTSecret     string `json:"jwt_secret"`
+	TMDbAPIKey    string `json:"tmdb_api_key,omitempty"`
 	TMDbReadToken string `json:"tmdb_read_token,omitempty"`
-	TMDbLang     string `json:"tmdb_language,omitempty"`
-	OSTUser      string `json:"opensubtitles_user,omitempty"`
-	OSTPass      string `json:"opensubtitles_password,omitempty"`
-	OSTApiKey    string `json:"opensubtitles_api_key,omitempty"`
-	WebFrontend  string `json:"web_frontend,omitempty"`
+	TMDbLang      string `json:"tmdb_language,omitempty"`
+	OSTUser       string `json:"opensubtitles_user,omitempty"`
+	OSTPass       string `json:"opensubtitles_password,omitempty"`
+	OSTApiKey     string `json:"opensubtitles_api_key,omitempty"`
+	WebFrontend   string `json:"web_frontend,omitempty"`
 }
 
 // defaultConfig returns a usable config with defaults applied.

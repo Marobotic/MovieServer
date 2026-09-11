@@ -373,6 +373,41 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, res)
 }
 
+// handleProblems lists files that cannot be played (ffprobe unreadable) so
+// admins can see them without leaking them into the family library.
+func (s *Server) handleProblems(w http.ResponseWriter, r *http.Request) {
+	type problem struct {
+		Kind     string `json:"kind"`
+		ID       int64  `json:"id"`
+		Title    string `json:"title"`
+		FilePath string `json:"file_path"`
+	}
+	out := make([]problem, 0)
+	mrows, err := s.db.Query(`SELECT id, title, file_path FROM movies WHERE broken=1`)
+	if err == nil {
+		for mrows.Next() {
+			var p problem
+			p.Kind = "movie"
+			if mrows.Scan(&p.ID, &p.Title, &p.FilePath) == nil {
+				out = append(out, p)
+			}
+		}
+		mrows.Close()
+	}
+	erows, err := s.db.Query(`SELECT e.id, e.title, e.file_path FROM episodes e WHERE e.broken=1`)
+	if err == nil {
+		for erows.Next() {
+			var p problem
+			p.Kind = "episode"
+			if erows.Scan(&p.ID, &p.Title, &p.FilePath) == nil {
+				out = append(out, p)
+			}
+		}
+		erows.Close()
+	}
+	writeJSON(w, 200, out)
+}
+
 func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	dest := filepath.Join(s.conf.DataDir, "covers", filepath.Base(name))

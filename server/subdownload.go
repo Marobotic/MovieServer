@@ -42,10 +42,10 @@ type osSearchBody struct {
 type osSubResult struct {
 	ID         string `json:"id"`
 	Attributes struct {
-		Language   string `json:"language"`
-		AiTranslated bool `json:"ai_translated"`
+		Language       string `json:"language"`
+		AiTranslated   bool   `json:"ai_translated"`
 		MovieHashMatch string `json:"moviehash_match"`
-		Files      []struct {
+		Files          []struct {
 			FileID   int    `json:"file_id"`
 			FileName string `json:"file_name"`
 		} `json:"files"`
@@ -53,8 +53,8 @@ type osSubResult struct {
 }
 
 type osSearchResponse struct {
-	TotalCount int            `json:"total_count"`
-	Data       []osSubResult  `json:"data"`
+	TotalCount int           `json:"total_count"`
+	Data       []osSubResult `json:"data"`
 }
 
 type osDownloadBody struct {

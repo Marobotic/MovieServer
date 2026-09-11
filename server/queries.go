@@ -10,19 +10,21 @@ import (
 
 func scanMovie(rows interface{ Scan(...any) error }, m *Movie) error {
 	var added string
+	var broken int
 	err := rows.Scan(&m.ID, &m.Title, &m.Year, &m.FilePath, &m.SizeBytes, &m.Overview,
-		&m.Poster, &m.Backdrop, &m.TrailerURL, &m.Duration, &m.TMDbID, &added)
+		&m.Poster, &m.Backdrop, &m.TrailerURL, &m.Duration, &m.TMDbID, &added, &broken)
 	if err != nil {
 		return err
 	}
+	m.Broken = broken != 0
 	m.AddedAt = parseDBTime(added)
 	return nil
 }
 
-const movieCols = `id, title, year, file_path, size_bytes, overview, poster, backdrop, trailer_url, duration_sec, tmdb_id, added_at`
+const movieCols = `id, title, year, file_path, size_bytes, overview, poster, backdrop, trailer_url, duration_sec, tmdb_id, added_at, broken`
 
 func (s *Server) listMovies() ([]Movie, error) {
-	rows, err := s.db.Query(`SELECT ` + movieCols + ` FROM movies ORDER BY title COLLATE NOCASE`)
+	rows, err := s.db.Query(`SELECT ` + movieCols + ` FROM movies WHERE broken=0 ORDER BY title COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +82,7 @@ func (s *Server) getShow(id int64) (*Show, error) {
 }
 
 func (s *Server) episodesForShow(showID int64) ([]Episode, error) {
-	rows, err := s.db.Query(`SELECT id, show_id, season, episode, title, overview, still, file_path, size_bytes, duration_sec FROM episodes WHERE show_id = ? ORDER BY season, episode`, showID)
+	rows, err := s.db.Query(`SELECT id, show_id, season, episode, title, overview, still, file_path, size_bytes, duration_sec FROM episodes WHERE show_id = ? AND broken=0 ORDER BY season, episode`, showID)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +110,10 @@ func (s *Server) getEpisode(id int64) (*Episode, error) {
 
 // ---- progress ----
 
-type watchedKey struct{ kind string; id int64 }
+type watchedKey struct {
+	kind string
+	id   int64
+}
 
 func (s *Server) saveProgress(userID int64, kind string, mediaID, pos, dur int64, completed bool) error {
 	_, err := s.db.Exec(`INSERT INTO progress (user_id, media_kind, media_id, position, duration, completed, updated_at)

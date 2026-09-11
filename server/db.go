@@ -35,6 +35,7 @@ type Movie struct {
 	TrailerURL string    `json:"trailer_url"`
 	Duration   int64     `json:"duration_sec,omitempty"`
 	TMDbID     int       `json:"tmdb_id,omitempty"`
+	Broken     bool      `json:"broken,omitempty"`
 	AddedAt    time.Time `json:"added_at"`
 }
 
@@ -62,6 +63,7 @@ type Episode struct {
 	FilePath   string     `json:"file_path"`
 	SizeBytes  int64      `json:"size_bytes"`
 	Duration   int64      `json:"duration_sec,omitempty"`
+	Broken     bool       `json:"broken,omitempty"`
 	ShowTitle  string     `json:"show_title,omitempty"`
 	TrailerURL string     `json:"trailer_url,omitempty"`
 	WatchedAt  *time.Time `json:"-"`
@@ -134,6 +136,7 @@ CREATE TABLE IF NOT EXISTS movies (
 	trailer_url  TEXT NOT NULL DEFAULT '',
 	duration_sec INTEGER NOT NULL DEFAULT 0,
 	tmdb_id      INTEGER NOT NULL DEFAULT 0,
+	broken       INTEGER NOT NULL DEFAULT 0,
 	added_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -160,7 +163,8 @@ CREATE TABLE IF NOT EXISTS episodes (
 	still       TEXT NOT NULL DEFAULT '',
 	file_path   TEXT NOT NULL UNIQUE,
 	size_bytes  INTEGER NOT NULL DEFAULT 0,
-	duration_sec INTEGER NOT NULL DEFAULT 0
+	duration_sec INTEGER NOT NULL DEFAULT 0,
+	broken      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS progress (
@@ -209,6 +213,8 @@ func runMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_progress_user ON progress(user_id, updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_episodes_show ON episodes(show_id, season, episode)`,
 		`ALTER TABLE users ADD COLUMN audio_lang TEXT NOT NULL DEFAULT 'eng'`,
+		`ALTER TABLE movies ADD COLUMN broken INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE episodes ADD COLUMN broken INTEGER NOT NULL DEFAULT 0`,
 	}
 	for i := ver; i < len(steps); i++ {
 		if _, err := db.Exec(steps[i]); err != nil {

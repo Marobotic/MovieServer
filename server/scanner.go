@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 var videoExts = map[string]bool{
@@ -203,6 +202,16 @@ func (s *Server) scanMovieDir(dir, name string) bool {
 	return true
 }
 
+// probeMovie inspects a movie file at scan time: returns its duration in
+// seconds and whether the file is unreadable/corrupt (ffprobe cannot parse it).
+func (s *Server) probeMovie(full string) (int64, bool) {
+	d, err := ffprobeDuration(full)
+	if err != nil {
+		return 0, true
+	}
+	return d, d <= 0
+}
+
 func startMovie(title string, year int, path string, size int64) *Movie {
 	if size == 0 {
 		if fi, err := os.Stat(path); err == nil {
@@ -210,37 +219,6 @@ func startMovie(title string, year int, path string, size int64) *Movie {
 		}
 	}
 	return &Movie{Title: title, FileTitle: title, Year: year, FilePath: path, SizeBytes: size}
-}
-
-// match actor scan-time duration probes so a plain re-scan doesn't re-probe.
-// Keyed by size+mtime: files are immutable when unchanged.
-var (
-	probeCacheMu  sync.Mutex
-	durationCache = make(map[string]int64)
-)
-
-// movieDuration returns a cached ffprobe duration, probing only when the file
-// changed (different size or mtime).
-func (s *Server) movieDuration(full string, size int64) int64 {
-	fi, err := os.Stat(full)
-	if err != nil {
-		return 0
-	}
-	key := fmt.Sprintf("%s:%d:%d", full, size, fi.ModTime().UnixNano())
-	probeCacheMu.Lock()
-	if d, ok := durationCache[key]; ok {
-		probeCacheMu.Unlock()
-		return d
-	}
-	probeCacheMu.Unlock()
-	d, err := ffprobeDuration(full)
-	if err != nil {
-		return 0
-	}
-	probeCacheMu.Lock()
-	durationCache[key] = d
-	probeCacheMu.Unlock()
-	return d
 }
 
 // ffprobeDuration returns the length of a media file in seconds.
@@ -309,8 +287,9 @@ func (s *Server) upsertMovie(m *Movie, metadataOnly bool) {
 		if resolved, err := resolveRel(s.conf.MediaDir, existing.FilePath); err == nil {
 			full = resolved
 		}
-		_, err := s.db.Exec(`UPDATE movies SET file_title=?, size_bytes=?, duration_sec=? WHERE id=?`,
-			m.FileTitle, m.SizeBytes, s.movieDuration(full, m.SizeBytes), existing.ID)
+		dur, broken := s.probeMovie(full)
+		_, err := s.db.Exec(`UPDATE movies SET file_title=?, size_bytes=?, duration_sec=?, broken=? WHERE id=?`,
+			m.FileTitle, m.SizeBytes, dur, boolInt(broken), existing.ID)
 		if err != nil {
 			fmt.Println("upsert movie:", err)
 		}
@@ -324,14 +303,22 @@ func (s *Server) upsertMovie(m *Movie, metadataOnly bool) {
 		}
 		return
 	}
-	res, err := s.db.Exec(`INSERT INTO movies (title, file_title, year, file_path, size_bytes, overview, poster, backdrop, trailer_url, duration_sec, tmdb_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		m.Title, m.FileTitle, year, rel, m.SizeBytes, m.Overview, m.Poster, m.Backdrop, m.TrailerURL, s.movieDuration(filepath.Join(s.conf.MediaDir, rel), m.SizeBytes), m.TMDbID)
+	dur, broken := s.probeMovie(filepath.Join(s.conf.MediaDir, rel))
+	res, err := s.db.Exec(`INSERT INTO movies (title, file_title, year, file_path, size_bytes, overview, poster, backdrop, trailer_url, duration_sec, tmdb_id, broken)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		m.Title, m.FileTitle, year, rel, m.SizeBytes, m.Overview, m.Poster, m.Backdrop, m.TrailerURL, dur, m.TMDbID, boolInt(broken))
 	if err != nil {
 		fmt.Println("insert movie:", err)
 		return
 	}
 	m.ID, _ = res.LastInsertId()
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (s *Server) lookupMovieByPath(rel string) (*Movie, error) {
@@ -488,16 +475,17 @@ func (s *Server) upsertEpisode(show *Show, season int, fileName, fullPath string
 	var id int64
 	var oldSize int64
 	err := s.db.QueryRow(`SELECT id, size_bytes FROM episodes WHERE file_path = ?`, rel).Scan(&id, &oldSize)
+	dur, broken := s.probeMovie(fullPath)
 	if err == nil {
 		if oldSize == size {
-			s.db.Exec(`UPDATE episodes SET title=? WHERE id=? AND title != ?`, title, id, title)
+			s.db.Exec(`UPDATE episodes SET title=?, duration_sec=?, broken=? WHERE id=? AND title != ?`, title, dur, boolInt(broken), id, title)
 			return false
 		}
-		s.db.Exec(`UPDATE episodes SET size_bytes=?, title=? WHERE id=?`, size, title, id)
+		s.db.Exec(`UPDATE episodes SET size_bytes=?, title=?, duration_sec=?, broken=? WHERE id=?`, size, title, dur, boolInt(broken), id)
 		return true
 	}
-	_, e := s.db.Exec(`INSERT INTO episodes (show_id, season, episode, title, file_path, size_bytes)
-		VALUES (?,?,?,?,?,?)`, show.ID, season, eNum, title, rel, size)
+	_, e := s.db.Exec(`INSERT INTO episodes (show_id, season, episode, title, file_path, size_bytes, duration_sec, broken)
+		VALUES (?,?,?,?,?,?,?,?)`, show.ID, season, eNum, title, rel, size, dur, boolInt(broken))
 	if e != nil {
 		fmt.Println("insert episode:", e)
 		return false
