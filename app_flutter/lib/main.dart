@@ -11,7 +11,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
   final baseUrl = await Api.defaultBaseUrl();
-  final api = Api(baseUrl: baseUrl);
+  final api = await Api.create(baseUrl: baseUrl);
   runApp(
     Provider<Api>.value(
       value: api,

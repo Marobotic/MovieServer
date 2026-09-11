@@ -25,8 +25,13 @@ class Api {
   String? token;
   User? user;
 
-  Api({required this.baseUrl}) {
-    _initSaved();
+  Api._({required this.baseUrl});
+
+  /// Creates an Api instance with persisted token/user already loaded.
+  static Future<Api> create({required String baseUrl}) async {
+    final api = Api._(baseUrl: baseUrl);
+    await api._initSaved();
+    return api;
   }
 
   static Future<String> defaultBaseUrl() async {
