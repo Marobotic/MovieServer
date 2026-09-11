@@ -316,6 +316,14 @@ class Api {
     return MediaFormat.fromJson(r);
   }
 
+  /// Preflight: what will happen if this item is played on this client.
+  Future<PlaybackDecision> playback(String mediaKind, int id,
+      {String client = 'web'}) async {
+    final r = await _request('GET', '/api/${_pluralKind(mediaKind)}/$id/playback',
+        query: {'client': client});
+    return PlaybackDecision.fromJson(r);
+  }
+
   // ---- requests ----
 
   Future<int> createRequest(

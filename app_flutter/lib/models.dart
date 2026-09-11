@@ -361,3 +361,83 @@ class MediaFormat {
         reason: j['reason'] as String? ?? '',
       );
 }
+
+class PlaybackEstimate {
+  final int minutes;
+  final int? sizeGB;
+  final String worker;
+
+  PlaybackEstimate({
+    required this.minutes,
+    this.sizeGB,
+    required this.worker,
+  });
+
+  factory PlaybackEstimate.fromJson(Map<String, dynamic> j) => PlaybackEstimate(
+        minutes: j['minutes'] as int? ?? 1,
+        sizeGB: j['size_gb'] as int?,
+        worker: j['worker'] as String? ?? 'cpu',
+      );
+}
+
+class PlaybackJobBrief {
+  final int id;
+  final String status;
+  final double percent;
+  final double speed;
+  final int etaSec;
+
+  PlaybackJobBrief({
+    required this.id,
+    required this.status,
+    required this.percent,
+    required this.speed,
+    required this.etaSec,
+  });
+
+  factory PlaybackJobBrief.fromJson(Map<String, dynamic> j) => PlaybackJobBrief(
+        id: j['id'] as int? ?? 0,
+        status: j['status'] as String? ?? 'queued',
+        percent: (j['percent'] as num?)?.toDouble() ?? 0,
+        speed: (j['speed'] as num?)?.toDouble() ?? 0,
+        etaSec: j['eta_sec'] as int? ?? 0,
+      );
+}
+
+class PlaybackDecision {
+  final String decision;
+  final String title;
+  final String url;
+  final String variant;
+  final String reason;
+  final PlaybackEstimate? estimate;
+  final PlaybackJobBrief? job;
+  final bool nativeOK;
+
+  PlaybackDecision({
+    required this.decision,
+    required this.title,
+    required this.url,
+    required this.variant,
+    required this.reason,
+    this.estimate,
+    this.job,
+    required this.nativeOK,
+  });
+
+  factory PlaybackDecision.fromJson(Map<String, dynamic> j) =>
+      PlaybackDecision(
+        decision: j['decision'] as String? ?? 'damaged',
+        title: j['title'] as String? ?? '',
+        url: j['url'] as String? ?? '',
+        variant: j['variant'] as String? ?? 'original',
+        reason: j['reason'] as String? ?? '',
+        estimate: j['estimate'] == null
+            ? null
+            : PlaybackEstimate.fromJson(j['estimate']),
+        job: j['job'] == null
+            ? null
+            : PlaybackJobBrief.fromJson(j['job']),
+        nativeOK: j['native_ok'] as bool? ?? false,
+      );
+}

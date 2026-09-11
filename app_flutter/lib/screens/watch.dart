@@ -51,7 +51,6 @@ class _WatchScreenState extends State<WatchScreen> {
   int? _activeAudio;
   double _subDelaySec = 0;
   String? _formatError;
-  Duration _knownDuration = Duration.zero;
 
   @override
   void initState() {
@@ -64,20 +63,15 @@ class _WatchScreenState extends State<WatchScreen> {
 
   Future<void> _open() async {
     final api = _api;
-    String url;
+    String? url;
     Duration startAt = Duration.zero;
+    String? blockReason;
+    final isLibrary = widget.item.mediaKind == 'movie' ||
+        widget.item.mediaKind == 'episode';
     if (widget.item.externalUrl != null && widget.externalUrl != null) {
       url = widget.externalUrl!;
-    } else if (kIsWeb) {
-      // Browsers can't play MKV/HEVC files directly; server transcodes to HLS.
-      url = api.hlsUrl(widget.item.mediaKind, widget.item.mediaId);
-    } else {
-      url = api.streamUrl(widget.item.mediaKind, widget.item.mediaId);
-    }
-    try {
-      // resume from last position for library media
-      if (widget.item.mediaKind == 'movie' ||
-          widget.item.mediaKind == 'episode') {
+    } else if (isLibrary) {
+      try {
         final cont = await api.continueWatching();
         for (final c in cont) {
           if (c.mediaKind == widget.item.mediaKind &&
@@ -87,48 +81,91 @@ class _WatchScreenState extends State<WatchScreen> {
             break;
           }
         }
+      } catch (_) {}
+      PlaybackDecision? pf;
+      try {
+        pf = await api.playback(widget.item.mediaKind, widget.item.mediaId,
+            client: kIsWeb ? 'web' : 'native');
+      } catch (e) {
+        blockReason = 'Playback check failed ($e). Try again.';
       }
-    } catch (_) {}
+      if (pf != null) {
+        if (pf.decision == 'play') {
+          if (kIsWeb) {
+            url = _webUrl(pf.url);
+          } else {
+            url = api.streamUrl(widget.item.mediaKind, widget.item.mediaId);
+          }
+        } else {
+          blockReason = _playbackBlockMessage(pf);
+        }
+      }
+    } else {
+      url = api.streamUrl(widget.item.mediaKind, widget.item.mediaId);
+    }
+    if (url == null && blockReason == null) {
+      blockReason = 'Playback check unavailable. Try again.';
+    }
     if (!mounted) return;
     _loadTracks();
+    if (blockReason != null) {
+      setState(() {
+        _formatError = blockReason;
+        _buffering = false;
+      });
+      return;
+    }
     if (kIsWeb) {
-      // The server already seeks to the resume point for HLS (faster than
-      // letting the player join mid-stream and wait for the seek).
-      var fmtSupported = true;
-      String? fmtReason;
+      _offset = Duration.zero;
       try {
-        final fmt =
-            await api.detect(widget.item.mediaKind, widget.item.mediaId);
-        fmtSupported = fmt.supported;
-        fmtReason = fmt.reason;
-        _knownDuration = Duration(seconds: fmt.durationSec);
-        if (fmt.durationSec > 0) setState(() {});
-      } catch (_) {
-        // Probe is best-effort; if it fails, still try to play.
-      }
-      if (!mounted) return;
-      if (!fmtSupported) {
-        setState(() {
-          _formatError = fmtReason == null || fmtReason.isEmpty
-              ? 'Unknown format'
-              : fmtReason;
-          _buffering = false;
-        });
-        return;
-      }
-      await _controller.open(
-        api.hlsUrl(widget.item.mediaKind, widget.item.mediaId,
-            startSeconds: startAt.inSeconds),
-        startAt: Duration.zero,
-      );
-      _offset = startAt;
+        await _controller.open(url!);
+        if (startAt.inSeconds > 15) {
+          await _controller.seek(startAt);
+        }
+      } catch (_) {}
     } else {
-      await _controller.open(url, startAt: startAt);
+      await _controller.open(url!, startAt: startAt);
+      _offset = startAt;
       await _loadTracks();
       _applyPreferredAudio();
     }
     await _controller.play();
     _startProgressTimer();
+  }
+
+  // Server paths come back without a token; the <video> element needs one.
+  String _webUrl(String path) {
+    final u = Uri.parse('${_api.baseUrl}$path');
+    return u
+        .replace(queryParameters: {...u.queryParameters, 'token': _api.token ?? ''})
+        .toString();
+  }
+
+  String _playbackBlockMessage(PlaybackDecision pf) {
+    if (pf.decision == 'damaged' || pf.decision == 'still_copying') {
+      if (pf.reason.isNotEmpty) return pf.reason;
+      return pf.decision == 'damaged'
+          ? 'This file is damaged and cannot be played.'
+          : 'Still being copied to the server. Try again in a few minutes.';
+    }
+    final est = pf.estimate;
+    final detail = est == null
+        ? ''
+        : 'About ${est.minutes} min, '
+            '${est.worker == 'gpu' ? 'GPU encode' : 'one CPU core'}'
+            '${est.sizeGB != null ? ', about ${est.sizeGB} GB' : ''}.';
+    if (_api.user?.isAdmin ?? false) {
+      return '${pf.title} can\'t play in the browser as it is.\n${pf.reason}\n$detail';
+    }
+    _askMaro();
+    return 'Not ready on this device yet. Maro has been asked to prepare it.\n${pf.reason}';
+  }
+
+  Future<void> _askMaro() async {
+    try {
+      await _api.createRequest(
+          'prepare', widget.item.title, 0, 'Prepare for web browser', 0);
+    } catch (_) {}
   }
 
   // Native players pick the audio stream by the profile's preferred language
@@ -158,25 +195,14 @@ class _WatchScreenState extends State<WatchScreen> {
     } catch (_) {}
   }
 
-  // On web, jumping in the timeline restarts the HLS job at the target offset
-  // because a live/event playlist cannot be sought ahead of what ffmpeg has
-  // already produced. The server's transcoder is fast, so this is noticable
-  // only as a brief rebuffer.
-  Future<void> _webSeek(int targetSec) async {
-    if (!kIsWeb) {
-      final rel = targetSec - _offset.inSeconds;
-      _controller.seek(Duration(seconds: rel < 0 ? 0 : rel));
-      return;
-    }
+  // Seeking works natively for direct file playback on every platform. The
+  // resume offset only applies to native players (started via startAt).
+  Future<void> _seek(int targetSec) async {
     setState(() => _buffering = true);
+    final rel = targetSec - _offset.inSeconds;
+    final target = Duration(seconds: rel < 0 ? 0 : rel);
     try {
-      await _controller.open(
-        _api.hlsUrl(widget.item.mediaKind, widget.item.mediaId,
-            startSeconds: targetSec),
-        startAt: Duration.zero,
-      );
-      _offset = Duration(seconds: targetSec);
-      await _controller.play();
+      await _controller.seek(target);
     } catch (_) {}
     if (mounted) {
       setState(() => _buffering = false);
@@ -387,10 +413,7 @@ class _WatchScreenState extends State<WatchScreen> {
     });
   }
 
-  int get _effectiveSec {
-    final known = _knownDuration.inSeconds;
-    return known > 0 ? known : _duration.inSeconds;
-  }
+  int get _effectiveSec => _duration.inSeconds;
 
   String _fmt(Duration d) {
     final h = d.inHours;
@@ -515,7 +538,7 @@ class _WatchScreenState extends State<WatchScreen> {
                         },
                         onChangeEnd: (v) {
                           final target = (v * _effectiveSec).round();
-                          _webSeek(target);
+                          _seek(target);
                         },
                       ),
                       Row(
@@ -524,7 +547,7 @@ class _WatchScreenState extends State<WatchScreen> {
                             color: Colors.white,
                             icon: const Icon(Icons.replay_10),
                             onPressed: () {
-                              _webSeek(_realSec - 10);
+                              _seek(_realSec - 10);
                             },
                           ),
                           IconButton(
@@ -544,7 +567,7 @@ class _WatchScreenState extends State<WatchScreen> {
                             color: Colors.white,
                             icon: const Icon(Icons.forward_10),
                             onPressed: () {
-                              _webSeek(_realSec + 10);
+                              _seek(_realSec + 10);
                             },
                           ),
                           IconButton(
