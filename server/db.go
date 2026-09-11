@@ -24,6 +24,7 @@ type User struct {
 type Movie struct {
 	ID         int64     `json:"id"`
 	Title      string    `json:"title"`
+	FileTitle  string    `json:"file_title,omitempty"`
 	Year       int       `json:"year"`
 	FilePath   string    `json:"file_path"`
 	SizeBytes  int64     `json:"size_bytes"`
@@ -49,35 +50,36 @@ type Show struct {
 }
 
 type Episode struct {
-	ID         int64     `json:"id"`
-	ShowID     int64     `json:"show_id"`
-	Season     int       `json:"season"`
-	Episode    int       `json:"episode"`
-	Title      string    `json:"title"`
-	Overview   string    `json:"overview"`
-	Still      string    `json:"still"`
-	FilePath   string    `json:"file_path"`
-	SizeBytes  int64     `json:"size_bytes"`
-	Duration   int64     `json:"duration_sec,omitempty"`
-	ShowTitle  string    `json:"show_title,omitempty"`
-	TrailerURL string    `json:"trailer_url,omitempty"`
+	ID         int64      `json:"id"`
+	ShowID     int64      `json:"show_id"`
+	Season     int        `json:"season"`
+	Episode    int        `json:"episode"`
+	Title      string     `json:"title"`
+	FileTitle  string     `json:"file_title,omitempty"`
+	Overview   string     `json:"overview"`
+	Still      string     `json:"still"`
+	FilePath   string     `json:"file_path"`
+	SizeBytes  int64      `json:"size_bytes"`
+	Duration   int64      `json:"duration_sec,omitempty"`
+	ShowTitle  string     `json:"show_title,omitempty"`
+	TrailerURL string     `json:"trailer_url,omitempty"`
 	WatchedAt  *time.Time `json:"-"`
 }
 
 type Progress struct {
-	ID           int64      `json:"-"`
-	UserID       int64      `json:"user_id"`
-	MediaKind    string     `json:"media_kind"` // "movie" | "episode"
-	MediaID      int64      `json:"media_id"`
-	Position     int64      `json:"position"`
-	Duration     int64      `json:"duration"`
-	Completed    bool       `json:"completed"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	Title        string     `json:"title,omitempty"`
-	Poster       string     `json:"poster,omitempty"`
-	ShowID       int64      `json:"show_id,omitempty"`
-	Season       int        `json:"season,omitempty"`
-	Episode      int        `json:"episode,omitempty"`
+	ID        int64     `json:"-"`
+	UserID    int64     `json:"user_id"`
+	MediaKind string    `json:"media_kind"` // "movie" | "episode"
+	MediaID   int64     `json:"media_id"`
+	Position  int64     `json:"position"`
+	Duration  int64     `json:"duration"`
+	Completed bool      `json:"completed"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Title     string    `json:"title,omitempty"`
+	Poster    string    `json:"poster,omitempty"`
+	ShowID    int64     `json:"show_id,omitempty"`
+	Season    int       `json:"season,omitempty"`
+	Episode   int       `json:"episode,omitempty"`
 }
 
 type Request struct {
@@ -121,6 +123,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS movies (
 	id           INTEGER PRIMARY KEY AUTOINCREMENT,
 	title        TEXT NOT NULL,
+	file_title   TEXT NOT NULL DEFAULT '',
 	year         INTEGER NOT NULL DEFAULT 0,
 	file_path    TEXT NOT NULL UNIQUE,
 	size_bytes   INTEGER NOT NULL DEFAULT 0,
@@ -151,6 +154,7 @@ CREATE TABLE IF NOT EXISTS episodes (
 	season      INTEGER NOT NULL DEFAULT 1,
 	episode     INTEGER NOT NULL DEFAULT 1,
 	title       TEXT NOT NULL DEFAULT '',
+	file_title  TEXT NOT NULL DEFAULT '',
 	overview    TEXT NOT NULL DEFAULT '',
 	still       TEXT NOT NULL DEFAULT '',
 	file_path   TEXT NOT NULL UNIQUE,
@@ -183,5 +187,34 @@ CREATE TABLE IF NOT EXISTS requests (
 );
 `
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+	return runMigrations(db)
+}
+
+// runMigrations applies ordered ALTER TABLE steps to databases that were
+// created before a schema change. Each migration is recorded in
+// schema_version so it runs exactly once.
+func runMigrations(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+		return err
+	}
+	var ver int
+	_ = db.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_version`).Scan(&ver)
+	steps := []string{
+		`ALTER TABLE movies ADD COLUMN file_title TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE episodes ADD COLUMN file_title TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_progress_user ON progress(user_id, updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_episodes_show ON episodes(show_id, season, episode)`,
+	}
+	for i := ver; i < len(steps); i++ {
+		if _, err := db.Exec(steps[i]); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, i+1); err != nil {
+			return err
+		}
+	}
+	return nil
 }

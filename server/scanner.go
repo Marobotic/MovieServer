@@ -3,11 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 var videoExts = map[string]bool{
@@ -17,14 +19,14 @@ var videoExts = map[string]bool{
 }
 
 var (
-	yearRe     = regexp.MustCompile(`.*?[\(\[]?\s*((?:19|20)\d{2})\s*[\)\]]?.*`)
+	yearRe         = regexp.MustCompile(`.*?[\(\[]?\s*((?:19|20)\d{2})\s*[\)\]]?.*`)
 	seasonFolderRe = regexp.MustCompile(`(?i)(?:season[\s._-]*|s)(\d{1,2})`)
 	episodeNameRe  = regexp.MustCompile(`(?i)[sS](\d{1,2})[eE](\d{1,3})`)
 	episodeXRe     = regexp.MustCompile(`(?i)(?:^|[^0-9])(\d{1,2})[xX](\d{1,3})`)
 	episodeWordRe  = regexp.MustCompile(`(?i)(?:episode|ep)[\s._-]?(\d{1,3})`)
 	releaseTagRe   = regexp.MustCompile(`(?i)\b(?:720p|1080p|2160p|480p|360p|1440p|uhd|hdr10?|dovi|sdr|web-?rip|web-?dl|webdl|blu-?ray|brrip|bdrip|hdtv|dvdr|dvd?rip|hdrip|remux|amzn|nf|netflix|disney(?:\.\+)?|german|french|francais|français|ita|italian|english|eng|spanish|espa[ñn]ol|castellano|sub(?:bed)?|x264|x265|h264|h265|hevc|avc|av1|vp9|vp8|aac|ac3|dts(?:-hd)?|flac|truehd|10bit|8bit|proper|repack|extended|unrated|imax|uncut|multi|dual|hardcoded|\d{3,4}p|\d+mb|\d+bit)\b`)
 	audioNumRe     = regexp.MustCompile(`(?i)\b(?:dd\s?5?[.\s]?1|ddp5?[.\s]?1|5[.\s]?1|7[.\s]?1)\b`)
-	bracketTagRe = regexp.MustCompile(`[\[\(][^\]\)]*[\]\)]`)
+	bracketTagRe   = regexp.MustCompile(`[\[\(][^\]\)]*[\]\)]`)
 )
 
 // releaseGroups lists common release-group names that end filenames.
@@ -98,8 +100,8 @@ func stripYearMark(s string) string {
 }
 
 type scanResult struct {
-	Movies  int `json:"movies"`
-	Shows   int `json:"shows"`
+	Movies   int `json:"movies"`
+	Shows    int `json:"shows"`
 	Episodes int `json:"episodes"`
 }
 
@@ -206,7 +208,57 @@ func startMovie(title string, year int, path string, size int64) *Movie {
 			size = fi.Size()
 		}
 	}
-	return &Movie{Title: title, Year: year, FilePath: path, SizeBytes: size}
+	return &Movie{Title: title, FileTitle: title, Year: year, FilePath: path, SizeBytes: size}
+}
+
+// match actor scan-time duration probes so a plain re-scan doesn't re-probe.
+// Keyed by size+mtime: files are immutable when unchanged.
+var (
+	probeCacheMu  sync.Mutex
+	durationCache = make(map[string]int64)
+)
+
+// movieDuration returns a cached ffprobe duration, probing only when the file
+// changed (different size or mtime).
+func (s *Server) movieDuration(full string, size int64) int64 {
+	fi, err := os.Stat(full)
+	if err != nil {
+		return 0
+	}
+	key := fmt.Sprintf("%s:%d:%d", full, size, fi.ModTime().UnixNano())
+	probeCacheMu.Lock()
+	if d, ok := durationCache[key]; ok {
+		probeCacheMu.Unlock()
+		return d
+	}
+	probeCacheMu.Unlock()
+	d, err := ffprobeDuration(full)
+	if err != nil {
+		return 0
+	}
+	probeCacheMu.Lock()
+	durationCache[key] = d
+	probeCacheMu.Unlock()
+	return d
+}
+
+// ffprobeDuration returns the length of a media file in seconds.
+func ffprobeDuration(full string) (int64, error) {
+	probe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe not found")
+	}
+	out, err := exec.Command(probe, "-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1", full).Output()
+	if err != nil {
+		return 0, err
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(f), nil
 }
 
 func (s *Server) upsertMovie(m *Movie, metadataOnly bool) {
@@ -229,10 +281,20 @@ func (s *Server) upsertMovie(m *Movie, metadataOnly bool) {
 		upd.WriteString("UPDATE movies SET ")
 		var args []any
 		if m.Overview != "" && existing.Overview == "" {
-			upd.WriteString("overview=?, "); args = append(args, m.Overview)
+			upd.WriteString("overview=?, ")
+			args = append(args, m.Overview)
 		}
 		if m.Poster != "" && existing.Poster == "" {
-			upd.WriteString("poster=?, "); args = append(args, m.Poster)
+			upd.WriteString("poster=?, ")
+			args = append(args, m.Poster)
+		}
+		if m.Backdrop != "" && existing.Backdrop == "" {
+			upd.WriteString("backdrop=?, ")
+			args = append(args, m.Backdrop)
+		}
+		if m.Title != "" {
+			upd.WriteString("title=?, ")
+			args = append(args, m.Title)
 		}
 		upd.WriteString("trailer_url=?, tmdb_id=?, year=? WHERE id=?")
 		args = append(args, m.TrailerURL, m.TMDbID, year, existing.ID)
@@ -240,17 +302,30 @@ func (s *Server) upsertMovie(m *Movie, metadataOnly bool) {
 		return
 	}
 	if existing != nil {
-		// refresh file metadata
-		_, err := s.db.Exec(`UPDATE movies SET title=?, year=?, size_bytes=?, duration_sec=? WHERE id=?`,
-			m.Title, year, m.SizeBytes, m.Duration, existing.ID)
+		// refresh file metadata, but never clobber a TMDB-matched title/year on
+		// a plain rescan (file_title stays the on-disk name).
+		full := existing.FilePath
+		if resolved, err := resolveRel(s.conf.MediaDir, existing.FilePath); err == nil {
+			full = resolved
+		}
+		_, err := s.db.Exec(`UPDATE movies SET file_title=?, size_bytes=?, duration_sec=? WHERE id=?`,
+			m.FileTitle, m.SizeBytes, s.movieDuration(full, m.SizeBytes), existing.ID)
 		if err != nil {
 			fmt.Println("upsert movie:", err)
 		}
+		if existing.TMDbID == 0 {
+			if existing.Title != m.Title {
+				s.db.Exec(`UPDATE movies SET title=? WHERE id=?`, m.Title, existing.ID)
+			}
+			if existing.Year != year {
+				s.db.Exec(`UPDATE movies SET year=? WHERE id=?`, year, existing.ID)
+			}
+		}
 		return
 	}
-	res, err := s.db.Exec(`INSERT INTO movies (title, year, file_path, size_bytes, overview, poster, backdrop, trailer_url, duration_sec, tmdb_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		m.Title, year, rel, m.SizeBytes, m.Overview, m.Poster, m.Backdrop, m.TrailerURL, m.Duration, m.TMDbID)
+	res, err := s.db.Exec(`INSERT INTO movies (title, file_title, year, file_path, size_bytes, overview, poster, backdrop, trailer_url, duration_sec, tmdb_id)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		m.Title, m.FileTitle, year, rel, m.SizeBytes, m.Overview, m.Poster, m.Backdrop, m.TrailerURL, s.movieDuration(filepath.Join(s.conf.MediaDir, rel), m.SizeBytes), m.TMDbID)
 	if err != nil {
 		fmt.Println("insert movie:", err)
 		return

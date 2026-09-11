@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,15 +42,15 @@ func (c *tmdbClient) get(path string, out interface{}) error {
 	if err != nil {
 		return err
 	}
+	q := req.URL.Query()
+	q.Set("language", c.lang)
 	if c.token != "" {
 		// Read-access token is the modern, officially supported auth method.
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	} else {
-		q := req.URL.Query()
 		q.Set("api_key", c.key)
-		q.Set("language", c.lang)
-		req.URL.RawQuery = q.Encode()
 	}
+	req.URL.RawQuery = q.Encode()
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return err
@@ -74,27 +75,27 @@ func truncate(s string, n int) string {
 
 type tmdbSearchResp struct {
 	Results []struct {
-		ID          int    `json:"id"`
-		Title       string `json:"title"`
-		Name        string `json:"name"`
+		ID            int    `json:"id"`
+		Title         string `json:"title"`
+		Name          string `json:"name"`
 		OriginalTitle string `json:"original_title"`
-		ReleaseDate string `json:"release_date"`
-		FirstAirDate string `json:"first_air_date"`
-		PosterPath  string `json:"poster_path"`
-		Overview    string `json:"overview"`
-		MediaType   string `json:"media_type"`
+		ReleaseDate   string `json:"release_date"`
+		FirstAirDate  string `json:"first_air_date"`
+		PosterPath    string `json:"poster_path"`
+		Overview      string `json:"overview"`
+		MediaType     string `json:"media_type"`
 	} `json:"results"`
 }
 
 type tmdbMovieDetail struct {
-	ID          int     `json:"id"`
-	Title       string  `json:"title"`
-	Overview    string  `json:"overview"`
-	PosterPath  string  `json:"poster_path"`
+	ID           int    `json:"id"`
+	Title        string `json:"title"`
+	Overview     string `json:"overview"`
+	PosterPath   string `json:"poster_path"`
 	BackdropPath string `json:"backdrop_path"`
-	Runtime     int     `json:"runtime"`
-	ReleaseDate string  `json:"release_date"`
-	Videos      struct {
+	Runtime      int    `json:"runtime"`
+	ReleaseDate  string `json:"release_date"`
+	Videos       struct {
 		Results []struct {
 			Key  string `json:"key"`
 			Site string `json:"site"`
@@ -104,13 +105,13 @@ type tmdbMovieDetail struct {
 }
 
 type tmdbTVDetail struct {
-	ID      int    `json:"id"`
-	Name    string `json:"name"`
-	Overview string `json:"overview"`
-	PosterPath  string `json:"poster_path"`
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	Overview     string `json:"overview"`
+	PosterPath   string `json:"poster_path"`
 	BackdropPath string `json:"backdrop_path"`
 	FirstAirDate string `json:"first_air_date"`
-	Videos  struct {
+	Videos       struct {
 		Results []struct {
 			Key  string `json:"key"`
 			Site string `json:"site"`
@@ -120,12 +121,16 @@ type tmdbTVDetail struct {
 }
 
 type tmdbEpisodeDetail struct {
-	ID         int    `json:"id"`
-	Name       string `json:"name"`
-	Overview   string `json:"overview"`
-	StillPath  string `json:"still_path"`
-	AirDate    string `json:"air_date"`
-	EpisodeNumber int  `json:"episode_number"`
+	ID            int    `json:"id"`
+	Name          string `json:"name"`
+	Overview      string `json:"overview"`
+	StillPath     string `json:"still_path"`
+	AirDate       string `json:"air_date"`
+	EpisodeNumber int    `json:"episode_number"`
+}
+
+type tmdbSeasonDetail struct {
+	Episodes []tmdbEpisodeDetail `json:"episodes"`
 }
 
 func trailerFromVideos(results []struct {
@@ -158,8 +163,12 @@ type tmdbTVSearch struct {
 }
 
 func (c *tmdbClient) searchMovie(query string, year int) ([]tmdbMovieSearch, error) {
+	path := "/search/movie?query=" + url.QueryEscape(query)
+	if year > 0 {
+		path += "&primary_release_year=" + strconv.Itoa(year)
+	}
 	var resp tmdbSearchResp
-	err := c.get("/search/movie?query="+url.QueryEscape(query), &resp)
+	err := c.get(path, &resp)
 	out := make([]tmdbMovieSearch, 0, len(resp.Results))
 	for _, r := range resp.Results {
 		out = append(out, tmdbMovieSearch{ID: r.ID, Title: r.Title, ReleaseDate: r.ReleaseDate, PosterPath: r.PosterPath, Overview: r.Overview})
@@ -174,8 +183,12 @@ func (c *tmdbClient) movie(id int) (*tmdbMovieDetail, error) {
 }
 
 func (c *tmdbClient) searchTV(query string, year int) ([]tmdbTVSearch, error) {
+	path := "/search/tv?query=" + url.QueryEscape(query)
+	if year > 0 {
+		path += "&first_air_date_year=" + strconv.Itoa(year)
+	}
 	var resp tmdbSearchResp
-	err := c.get("/search/tv?query="+url.QueryEscape(query), &resp)
+	err := c.get(path, &resp)
 	out := make([]tmdbTVSearch, 0, len(resp.Results))
 	for _, r := range resp.Results {
 		out = append(out, tmdbTVSearch{ID: r.ID, Name: r.Name, FirstAirDate: r.FirstAirDate, PosterPath: r.PosterPath, Overview: r.Overview})
@@ -195,6 +208,12 @@ func (c *tmdbClient) episode(showID, season, ep int) (*tmdbEpisodeDetail, error)
 	return d, err
 }
 
+func (c *tmdbClient) season(showID, season int) (*tmdbSeasonDetail, error) {
+	d := &tmdbSeasonDetail{}
+	err := c.get(fmt.Sprintf("/tv/%d/season/%d", showID, season), d)
+	return d, err
+}
+
 // ---- enrichment ----
 
 // enrichLibrary pulls metadata from TMDB for anything missing it.
@@ -204,15 +223,16 @@ func (s *Server) enrichLibrary() {
 	}
 	c := s.tmdb()
 	// movies
-	rows, err := s.db.Query(`SELECT id, title, year, file_path, poster, overview FROM movies`)
+	rows, err := s.db.Query(`SELECT id, title, year, file_path, poster, backdrop, overview, tmdb_id FROM movies`)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var id int64
-			var title, fp, poster, overview string
+			var title, fp, poster, backdrop, overview string
 			var year int
-			rows.Scan(&id, &title, &year, &fp, &poster, &overview)
-			if poster != "" && overview != "" {
+			var tmdbID int
+			rows.Scan(&id, &title, &year, &fp, &poster, &backdrop, &overview, &tmdbID)
+			if poster != "" && overview != "" && backdrop != "" && tmdbID > 0 {
 				continue
 			}
 			if m, ok := s.enrichMovie(c, id, title, year); ok && m != nil {
@@ -222,20 +242,32 @@ func (s *Server) enrichLibrary() {
 		}
 	}
 	// shows
-	srows, err := s.db.Query(`SELECT id, title, year, poster, overview FROM shows`)
+	srows, err := s.db.Query(`SELECT id, title, year, poster, overview, backdrop, tmdb_id FROM shows`)
 	if err == nil {
 		defer srows.Close()
 		for srows.Next() {
 			var id int64
-			var title, poster, overview string
+			var title, poster, overview, backdrop string
 			var year int
-			srows.Scan(&id, &title, &year, &poster, &overview)
-			if poster != "" && overview != "" {
+			var tmdbID int
+			srows.Scan(&id, &title, &year, &poster, &overview, &backdrop, &tmdbID)
+			if poster != "" && overview != "" && backdrop != "" && tmdbID > 0 {
 				continue
 			}
 			if sh, ok := s.enrichShow(c, id, title, year); ok && sh != nil {
 				s.applyShowMetadata(sh)
 			}
+		}
+	}
+	// episodes: enrich every show's missing stills/overviews each scan, even
+	// when the show itself is fully enriched (enrichEpisodes only fills gaps).
+	showRows, rowsErr := s.db.Query(`SELECT id, COALESCE(tmdb_id,0) FROM shows WHERE tmdb_id != 0`)
+	if rowsErr == nil {
+		defer showRows.Close()
+		for showRows.Next() {
+			var id, tmdbID int64
+			showRows.Scan(&id, &tmdbID)
+			s.enrichEpisodes(c, id, tmdbID)
 		}
 	}
 }
@@ -247,7 +279,7 @@ func (s *Server) enrichMovie(c *tmdbClient, id int64, title string, year int) (*
 	}
 	best := results[0]
 	for _, r := range results {
-		if year > 0 && strings.Contains(r.ReleaseDate, fmt.Sprintf("-%d-", year)) {
+		if year > 0 && yearNear(derpYear(r.ReleaseDate), year) {
 			best = r
 			break
 		}
@@ -274,7 +306,7 @@ func (s *Server) enrichShow(c *tmdbClient, id int64, title string, year int) (*S
 	}
 	best := results[0]
 	for _, r := range results {
-		if year > 0 && strings.Contains(r.FirstAirDate, fmt.Sprintf("-%d-", year)) {
+		if year > 0 && yearNear(derpYear(r.FirstAirDate), year) {
 			best = r
 			break
 		}
@@ -300,42 +332,67 @@ func (s *Server) enrichEpisodes(c *tmdbClient, showID, tmdbID int64) {
 	if tmdbID == 0 {
 		return
 	}
-	rows, err := s.db.Query(`SELECT id, season, episode, title, still FROM episodes WHERE show_id = ? AND (title = '' OR still = '')`, showID)
+	// Episodes are enriched as often as they lack a still or overview, not
+	// just when the show itself was missing metadata.
+	rows, err := s.db.Query(`SELECT id, season, episode, title, overview, still FROM episodes WHERE show_id = ? AND (title = '' OR overview = '' OR still = '')`, showID)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
-	type ep struct{ id int64; s, e int; title, still string }
+	type ep struct {
+		id                     int64
+		s, e                   int
+		title, overview, still string
+	}
 	var eps []ep
 	for rows.Next() {
 		var e ep
-		rows.Scan(&e.id, &e.s, &e.e, &e.title, &e.still)
+		rows.Scan(&e.id, &e.s, &e.e, &e.title, &e.overview, &e.still)
 		eps = append(eps, e)
 	}
-	for _, e := range eps {
-		if e.title != "" && e.still != "" {
+	if len(eps) == 0 {
+		return
+	}
+	// One season fetch covers all its episodes instead of one API call each.
+	bySeason := map[int][]*ep{}
+	for i := range eps {
+		bySeason[eps[i].s] = append(bySeason[eps[i].s], &eps[i])
+	}
+	for seasonNum, list := range bySeason {
+		se, err := c.season(int(tmdbID), seasonNum)
+		if err != nil || se == nil {
 			continue
 		}
-		d, err := c.episode(int(tmdbID), e.s, e.e)
-		if err != nil {
-			continue
+		index := map[int]*tmdbEpisodeDetail{}
+		for i := range se.Episodes {
+			index[se.Episodes[i].EpisodeNumber] = &se.Episodes[i]
 		}
-		q := "UPDATE episodes SET "
-		var args []any
-		if e.title == "" && d.Name != "" {
-			q += "title=?, "
-			args = append(args, d.Name)
+		for _, e := range list {
+			d := index[e.e]
+			if d == nil {
+				continue
+			}
+			q := "UPDATE episodes SET "
+			var args []any
+			if e.title == "" && d.Name != "" {
+				q += "title=?, "
+				args = append(args, d.Name)
+			}
+			if e.overview == "" && d.Overview != "" {
+				q += "overview=?, "
+				args = append(args, d.Overview)
+			}
+			if e.still == "" && d.StillPath != "" {
+				q += "still=?, "
+				args = append(args, s.downloadImage(posterURL(d.StillPath, "w300"), ""))
+			}
+			if len(args) == 0 {
+				continue
+			}
+			q = strings.TrimSuffix(q, ", ") + " WHERE id=?"
+			args = append(args, e.id)
+			s.db.Exec(q, args...)
 		}
-		if e.still == "" && d.StillPath != "" {
-			q += "still=?, "
-			args = append(args, s.downloadImage(posterURL(d.StillPath, "w300"), ""))
-		}
-		if len(args) == 0 {
-			continue
-		}
-		q = strings.TrimSuffix(q, ", ") + " WHERE id=?"
-		args = append(args, e.id)
-		s.db.Exec(q, args...)
 	}
 }
 
@@ -367,7 +424,13 @@ func derpYear(date string) int {
 	return 0
 }
 
-func posterURL(path, size string) string { return tmdbImageBase + "/" + size + path }
+// yearNear reports whether target is within 1 year of want (handles TMDB
+// release dates that differ by one from the filename year).
+func yearNear(target, want int) bool {
+	return target > 0 && target >= want-1 && target <= want+1
+}
+
+func posterURL(path, size string) string   { return tmdbImageBase + "/" + size + path }
 func backdropURL(path, size string) string { return tmdbImageBase + "/" + size + path }
 
 // downloadImage stores a remote image under data/covers and returns a server-relative URL.
