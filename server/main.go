@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -27,6 +28,10 @@ func main() {
 	configPath := flag.String("config", "config.json", "path to config.json")
 	organize := flag.Bool("organize", false, "reorganize media into folder-per-movie / season-per-show layout, then exit")
 	flag.Parse()
+
+	// Mirror every log line into the in-memory ring so the admin panel can
+	// surface recent server activity.
+	log.SetOutput(io.MultiWriter(os.Stderr, serverLogs))
 
 	if *organize {
 		conf, err := loadConfig(*configPath)
@@ -196,6 +201,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/requests", s.authMiddleware(s.handleListRequests))
 	mux.HandleFunc("PATCH /api/requests/{id}", s.requireAdmin(s.handleUpdateRequest))
 	mux.HandleFunc("DELETE /api/requests/{id}", s.authMiddleware(s.handleDeleteRequest))
+	mux.HandleFunc("GET /api/catalog", s.authMiddleware(s.handleCatalog))
+	mux.HandleFunc("GET /api/catalog/{type}/{id}", s.authMiddleware(s.handleCatalogDetail))
 
 	// user management (admin)
 	mux.HandleFunc("GET /api/users", s.requireAdmin(s.handleListUsers))
@@ -207,8 +214,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/scan", s.requireAdmin(s.handleScan))
 	mux.HandleFunc("POST /api/admin/subs", s.requireAdmin(s.handleSubDownload))
 	mux.HandleFunc("POST /api/admin/upload", s.requireAdmin(s.handleUpload))
-	mux.HandleFunc("GET /api/admin/tmdb/search", s.requireAdmin(s.handleTMDBSearch))
+	mux.HandleFunc("GET /api/admin/tmdb/search", s.authMiddleware(s.handleTMDBSearch))
 	mux.HandleFunc("GET /api/admin/problems", s.requireAdmin(s.handleProblems))
+	mux.HandleFunc("GET /api/admin/logs", s.requireAdmin(s.handleAdminLogs))
 	mux.HandleFunc("GET /api/admin/library_health", s.requireAdmin(s.handleLibraryHealth))
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
