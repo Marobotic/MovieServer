@@ -3,14 +3,17 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../api.dart';
+import '../fullscreen.dart';
 import '../models.dart';
 import '../playback.dart';
 import '../subtitles/overlay.dart';
 import '../subtitles/parser.dart';
+import '../subtitles/settings_sheet.dart';
 import '../widgets/seek_bar.dart';
 
 class PlayableItem {
@@ -18,12 +21,18 @@ class PlayableItem {
   final int mediaId;
   final String title;
   final String? externalUrl;
+  final int? showId;
+  final int? season;
+  final int? episode;
 
   const PlayableItem({
     required this.mediaKind,
     required this.mediaId,
     required this.title,
     this.externalUrl,
+    this.showId,
+    this.season,
+    this.episode,
   });
 }
 
@@ -62,6 +71,12 @@ class _WatchScreenState extends State<WatchScreen> {
   PlaybackDecision? _pendingDecision;
   PlaybackJobBrief? _activeJob;
   List<SubtitleCue> _subtitleCues = [];
+  SubtitleStyle _subtitleStyle = const SubtitleStyle();
+
+  final FocusNode _focusNode = FocusNode();
+  bool _fullscreen = false;
+  Episode? _nextEpisode;
+  bool _nextChecked = false;
 
   @override
   void initState() {
@@ -69,15 +84,21 @@ class _WatchScreenState extends State<WatchScreen> {
     _api = context.read<Api>();
     _controller = createPlaybackController();
     _listen();
+    _loadSubtitleStyle();
     _open();
+  }
+
+  Future<void> _loadSubtitleStyle() async {
+    final style = await SubtitleStyle.loadFromPrefs();
+    if (mounted) setState(() => _subtitleStyle = style);
   }
 
   Future<void> _open() async {
     final api = _api;
     String? url;
     Duration startAt = Duration.zero;
-    final isLibrary = widget.item.mediaKind == 'movie' ||
-        widget.item.mediaKind == 'episode';
+    final isLibrary =
+        widget.item.mediaKind == 'movie' || widget.item.mediaKind == 'episode';
 
     if (widget.item.externalUrl != null && widget.externalUrl != null) {
       url = widget.externalUrl!;
@@ -119,7 +140,8 @@ class _WatchScreenState extends State<WatchScreen> {
             _activeJob = null;
             _formatError = null;
           });
-        } else if (decision.decision == 'needs_quick_fix' || decision.decision == 'needs_encode') {
+        } else if (decision.decision == 'needs_quick_fix' ||
+            decision.decision == 'needs_encode') {
           setState(() {
             _pendingDecision = decision;
             _activeJob = null;
@@ -187,7 +209,8 @@ class _WatchScreenState extends State<WatchScreen> {
     _jobPollTimer?.cancel();
     _jobPollTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
       try {
-        final pf = await _api.playback(widget.item.mediaKind, widget.item.mediaId,
+        final pf = await _api.playback(
+            widget.item.mediaKind, widget.item.mediaId,
             client: kIsWeb ? 'web' : 'native');
         if (!mounted) return;
 
@@ -216,9 +239,10 @@ class _WatchScreenState extends State<WatchScreen> {
 
   String _webUrl(String path) {
     final u = Uri.parse('${_api.baseUrl}$path');
-    return u
-        .replace(queryParameters: {...u.queryParameters, 'token': _api.token ?? ''})
-        .toString();
+    return u.replace(queryParameters: {
+      ...u.queryParameters,
+      'token': _api.token ?? ''
+    }).toString();
   }
 
   Future<void> _startPrepare(PlaybackDecision pf, String mode) async {
@@ -294,9 +318,29 @@ class _WatchScreenState extends State<WatchScreen> {
           _tracks = t;
           _tracksLoaded = true;
         });
+        _selectEnglishByDefault(t);
       }
     } catch (_) {
       if (mounted) setState(() => _tracksLoaded = true);
+    }
+  }
+
+  void _selectEnglishByDefault(MediaTracks tracks) {
+    if (_activeSubtitle != null) return;
+    SubtitleInfo? english;
+    for (final subtitle in tracks.subtitles) {
+      final language = subtitle.language.toLowerCase();
+      if (language == 'en' || language == 'eng' || language.startsWith('en-')) {
+        english = subtitle;
+        break;
+      }
+    }
+    if (english != null) {
+      _selectSubtitle(
+        english.index,
+        _api.subtitleUrl(
+            widget.item.mediaKind, widget.item.mediaId, english.index),
+      );
     }
   }
 
@@ -360,19 +404,36 @@ class _WatchScreenState extends State<WatchScreen> {
                 ),
               ..._tracks.subtitles.map((s) => ListTile(
                     leading: const Icon(Icons.subtitles, color: Colors.white70),
-                    title: Text(s.name, style: const TextStyle(color: Colors.white)),
+                    title: Text(s.name,
+                        style: const TextStyle(color: Colors.white)),
                     subtitle: s.language.isNotEmpty
-                        ? Text(s.language, style: const TextStyle(color: Colors.white38))
+                        ? Text(s.language,
+                            style: const TextStyle(color: Colors.white38))
                         : null,
                     trailing: _activeSubtitle == s.index
                         ? const Icon(Icons.check, color: Color(0xFFE50914))
                         : null,
                     onTap: () {
-                      final url = _api.subtitleUrl(widget.item.mediaKind, widget.item.mediaId, s.index);
+                      final url = _api.subtitleUrl(
+                          widget.item.mediaKind, widget.item.mediaId, s.index);
                       _selectSubtitle(s.index, url);
                       Navigator.of(sheetCtx).pop();
                     },
                   )),
+              const Divider(
+                  color: Colors.white12, height: 24, indent: 20, endIndent: 20),
+              ListTile(
+                leading: const Icon(Icons.format_paint, color: Colors.white70),
+                title: const Text('Subtitle appearance',
+                    style: TextStyle(color: Colors.white)),
+                subtitle: const Text(
+                    'Font, size, colors, background and position',
+                    style: TextStyle(color: Colors.white38)),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _openSubtitleSettings();
+                },
+              ),
               const Padding(
                 padding: EdgeInsets.fromLTRB(20, 8, 20, 0),
                 child: Text('Subtitle delay',
@@ -385,7 +446,8 @@ class _WatchScreenState extends State<WatchScreen> {
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
                 child: Row(
                   children: [
-                    const Icon(Icons.slow_motion_video, color: Colors.white54, size: 20),
+                    const Icon(Icons.slow_motion_video,
+                        color: Colors.white54, size: 20),
                     Expanded(
                       child: Slider(
                         min: -10,
@@ -395,6 +457,8 @@ class _WatchScreenState extends State<WatchScreen> {
                         activeColor: const Color(0xFFE50914),
                         onChanged: (v) {
                           setState(() => _subDelaySec = v);
+                          _controller.setSubtitleDelay(
+                              Duration(milliseconds: (v * 1000).round()));
                         },
                       ),
                     ),
@@ -402,14 +466,16 @@ class _WatchScreenState extends State<WatchScreen> {
                       width: 54,
                       child: Text(
                         '${_subDelaySec >= 0 ? '+' : ''}${_subDelaySec.toStringAsFixed(1)}s',
-                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 13),
                         textAlign: TextAlign.right,
                       ),
                     ),
                   ],
                 ),
               ),
-              const Divider(color: Colors.white12, height: 24, indent: 20, endIndent: 20),
+              const Divider(
+                  color: Colors.white12, height: 24, indent: 20, endIndent: 20),
               const Padding(
                 padding: EdgeInsets.fromLTRB(20, 8, 20, 4),
                 child: Text('Audio',
@@ -426,8 +492,10 @@ class _WatchScreenState extends State<WatchScreen> {
                 ),
               ..._tracks.audio.map((a) => ListTile(
                     leading: const Icon(Icons.volume_up, color: Colors.white70),
-                    title: Text(a.label, style: const TextStyle(color: Colors.white)),
-                    subtitle: Text(a.language, style: const TextStyle(color: Colors.white38)),
+                    title: Text(a.label,
+                        style: const TextStyle(color: Colors.white)),
+                    subtitle: Text(a.language,
+                        style: const TextStyle(color: Colors.white38)),
                     trailing: _activeAudio == a.index
                         ? const Icon(Icons.check, color: Color(0xFFE50914))
                         : null,
@@ -445,10 +513,26 @@ class _WatchScreenState extends State<WatchScreen> {
     );
   }
 
+  void _openSubtitleSettings() {
+    _scheduleHide();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => SubtitleSettingsSheet(
+        initialStyle: _subtitleStyle,
+        onStyleChanged: (style) {
+          if (mounted) setState(() => _subtitleStyle = style);
+        },
+      ),
+    );
+  }
+
   void _listen() {
     _subs.add(_controller.position.listen((p) {
       _position = p;
       _disposePos = p;
+      _maybeLoadNext();
       if (mounted) setState(() {});
     }));
     _subs.add(_controller.duration.listen((d) {
@@ -486,9 +570,172 @@ class _WatchScreenState extends State<WatchScreen> {
     } catch (_) {}
   }
 
-  void _toggleControls() {
-    setState(() => _controlsVisible = !_controlsVisible);
+  void _togglePlayPause() {
+    if (_pendingDecision != null || _activeJob != null) return;
+    if (_formatError != null) return;
+    FocusScope.of(context).requestFocus(_focusNode);
+    setState(() => _controlsVisible = true);
     _scheduleHide();
+    _controller.toggle();
+  }
+
+  KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent || event is KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.space:
+        _togglePlayPause();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.keyF:
+      case LogicalKeyboardKey.f11:
+        _toggleFullscreen();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowRight:
+        _seek(_realSec + 10);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowLeft:
+        _seek(_realSec - 10);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.escape:
+        if (_fullscreen) {
+          _toggleFullscreen();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      default:
+        return KeyEventResult.ignored;
+    }
+  }
+
+  // Loads the following episode once when the current one nears its end so
+  // the watch screen can offer a "play next" shortcut for shows.
+  void _maybeLoadNext() {
+    if (_nextChecked) return;
+    if (widget.item.mediaKind != 'episode' ||
+        widget.item.showId == null ||
+        widget.item.episode == null) {
+      _nextChecked = true;
+      return;
+    }
+    final eff = _effectiveSec;
+    if (eff <= 300 || _realSec < eff - 300) return;
+    _nextChecked = true;
+    final showId = widget.item.showId!;
+    final curS = widget.item.season ?? 0;
+    final curE = widget.item.episode!;
+    () async {
+      try {
+        final det = await _api.showDetail(showId);
+        final eps = det.episodes;
+        Episode? next;
+        for (final e in eps) {
+          if (e.season == curS && e.episode == curE + 1) {
+            next = e;
+            break;
+          }
+        }
+        if (next == null) {
+          final laterSeasons = <int>{};
+          for (final e in eps) {
+            if (e.season > curS) laterSeasons.add(e.season);
+          }
+          final sorted = laterSeasons.toList()..sort();
+          for (final s in sorted) {
+            next = eps.where((e) => e.season == s && e.episode == 1).firstOrNull;
+            if (next != null) break;
+          }
+        }
+        if (mounted && next != null) setState(() => _nextEpisode = next);
+      } catch (_) {}
+    }();
+  }
+
+  void _openNextEpisode() {
+    final next = _nextEpisode;
+    if (next == null) return;
+    _scheduleHide();
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => WatchScreen(
+          item: PlayableItem(
+            mediaKind: 'episode',
+            mediaId: next.id,
+            title:
+                '${next.showTitle} S${next.season.toString().padLeft(2, '0')}E${next.episode.toString().padLeft(2, '0')}',
+            showId: next.showId,
+            season: next.season,
+            episode: next.episode,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleFullscreen() async {
+    FocusScope.of(context).requestFocus(_focusNode);
+    if (defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS) {
+      if (!_fullscreen) {
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      } else {
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      }
+      if (mounted) setState(() => _fullscreen = !_fullscreen);
+      return;
+    }
+    if (kIsWeb) {
+      final active = await toggleBrowserFullscreen();
+      if (mounted) setState(() => _fullscreen = active);
+      return;
+    }
+    // Desktop: cover the window with the same player skin.
+    if (!_fullscreen) {
+      final ok = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => Scaffold(
+            backgroundColor: Colors.black,
+            body: Focus(
+              autofocus: true,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _controller.toggle(),
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Center(
+                        child: AspectRatio(
+                          aspectRatio: 16 / 9,
+                          child: _controller.buildSurface(context),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: SafeArea(
+                        child: Align(
+                          alignment: Alignment.topRight,
+                          child: IconButton(
+                            color: Colors.white,
+                            icon: const Icon(Icons.fullscreen_exit),
+                            onPressed: () => Navigator.of(context).pop(true),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      if (mounted && ok == true) setState(() => _fullscreen = false);
+      return;
+    }
+    if (mounted) setState(() => _fullscreen = false);
   }
 
   void _scheduleHide() {
@@ -549,11 +796,16 @@ class _WatchScreenState extends State<WatchScreen> {
             Text(
               pf.title.isNotEmpty ? pf.title : widget.item.title,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 10),
             Text(
-              pf.reason.isNotEmpty ? pf.reason : 'Needs preparation for browser playback.',
+              pf.reason.isNotEmpty
+                  ? pf.reason
+                  : 'Needs preparation for browser playback.',
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
@@ -574,7 +826,8 @@ class _WatchScreenState extends State<WatchScreen> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFE50914),
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
                     ),
                     icon: const Icon(Icons.play_arrow),
                     label: const Text('Prepare now'),
@@ -585,7 +838,8 @@ class _WatchScreenState extends State<WatchScreen> {
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.white70,
                       side: const BorderSide(color: Colors.white24),
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
                     ),
                     onPressed: () => _startPrepare(pf, 'idle'),
                     child: const Text('Tonight'),
@@ -593,7 +847,8 @@ class _WatchScreenState extends State<WatchScreen> {
                   const SizedBox(width: 12),
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                    child: const Text('Cancel',
+                        style: TextStyle(color: Colors.white54)),
                   ),
                 ],
               )
@@ -640,7 +895,8 @@ class _WatchScreenState extends State<WatchScreen> {
         decoration: BoxDecoration(
           color: const Color(0xFF1E1E1E),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: isGaming ? Colors.amber.withAlpha(100) : Colors.white12),
+          border: Border.all(
+              color: isGaming ? Colors.amber.withAlpha(100) : Colors.white12),
           boxShadow: const [BoxShadow(color: Colors.black87, blurRadius: 16)],
         ),
         child: Column(
@@ -659,13 +915,19 @@ class _WatchScreenState extends State<WatchScreen> {
                     job.title.isNotEmpty ? job.title : widget.item.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold),
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: isGaming ? Colors.amber.withAlpha(50) : const Color(0xFFE50914).withAlpha(50),
+                    color: isGaming
+                        ? Colors.amber.withAlpha(50)
+                        : const Color(0xFFE50914).withAlpha(50),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
@@ -717,13 +979,15 @@ class _WatchScreenState extends State<WatchScreen> {
                 children: [
                   if (job.isRunning)
                     OutlinedButton(
-                      style: OutlinedButton.styleFrom(foregroundColor: Colors.white70),
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white70),
                       onPressed: () => _api.pauseJob(job.id),
                       child: const Text('Pause'),
                     )
                   else if (job.isPaused)
                     OutlinedButton(
-                      style: OutlinedButton.styleFrom(foregroundColor: Colors.white70),
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white70),
                       onPressed: () => _api.resumeJob(job.id),
                       child: const Text('Resume'),
                     ),
@@ -733,7 +997,8 @@ class _WatchScreenState extends State<WatchScreen> {
                       await _api.cancelJob(job.id);
                       if (mounted) Navigator.of(context).pop();
                     },
-                    child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                    child: const Text('Cancel',
+                        style: TextStyle(color: Colors.white54)),
                   ),
                   const Spacer(),
                   ElevatedButton(
@@ -760,10 +1025,14 @@ class _WatchScreenState extends State<WatchScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: GestureDetector(
-        onTap: _toggleControls,
-        child: Stack(
-          children: [
+      body: Focus(
+        autofocus: true,
+        onKeyEvent: _onKeyEvent,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _togglePlayPause,
+          child: Stack(
+            children: [
             // Video Surface
             Positioned.fill(
               child: Center(
@@ -774,30 +1043,33 @@ class _WatchScreenState extends State<WatchScreen> {
               ),
             ),
 
-            // Subtitle Overlay (universal for Web, Linux, Android)
-            Positioned.fill(
-              child: SubtitleOverlay(
-                cues: _subtitleCues,
-                position: Duration(seconds: _realSec),
-                delay: Duration(milliseconds: (_subDelaySec * 1000).round()),
-                fontSize: 22,
-              ),
-            ),
-
             // Buffering Indicator
-            if (_buffering && _position == Duration.zero && _pendingDecision == null && _activeJob == null && _formatError == null)
-              const Center(child: CircularProgressIndicator(color: Colors.white)),
+            if (_buffering &&
+                _position == Duration.zero &&
+                _pendingDecision == null &&
+                _activeJob == null &&
+                _formatError == null)
+              const Center(
+                  child: CircularProgressIndicator(color: Colors.white)),
 
             // Prepare Prompt Dialog
             if (_pendingDecision != null)
-              Positioned.fill(child: Container(color: Colors.black87, child: _buildPreparePrompt(_pendingDecision!))),
+              Positioned.fill(
+                  child: Container(
+                      color: Colors.black87,
+                      child: _buildPreparePrompt(_pendingDecision!))),
 
             // Real-time Progress Card
             if (_activeJob != null && !_activeJob!.isFinished)
-              Positioned.fill(child: Container(color: Colors.black87, child: _buildProgressCard(_activeJob!))),
+              Positioned.fill(
+                  child: Container(
+                      color: Colors.black87,
+                      child: _buildProgressCard(_activeJob!))),
 
             // Error Screen
-            if (_formatError != null && _pendingDecision == null && _activeJob == null)
+            if (_formatError != null &&
+                _pendingDecision == null &&
+                _activeJob == null)
               Positioned.fill(
                 child: Container(
                   color: Colors.black,
@@ -806,13 +1078,18 @@ class _WatchScreenState extends State<WatchScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.highlight_off, color: Color(0xFFE50914), size: 56),
+                        const Icon(Icons.highlight_off,
+                            color: Color(0xFFE50914), size: 56),
                         const SizedBox(height: 16),
                         const Text('Cannot Play',
-                            style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700)),
                         const SizedBox(height: 8),
                         Text(_formatError!,
-                            style: const TextStyle(color: Colors.white54, fontSize: 14),
+                            style: const TextStyle(
+                                color: Colors.white54, fontSize: 14),
                             textAlign: TextAlign.center),
                         const SizedBox(height: 24),
                         ElevatedButton(
@@ -826,7 +1103,10 @@ class _WatchScreenState extends State<WatchScreen> {
               ),
 
             // Controls Overlay
-            if (_controlsVisible && _pendingDecision == null && (_activeJob == null || _activeJob!.isFinished) && _formatError == null) ...[
+            if (_controlsVisible &&
+                _pendingDecision == null &&
+                (_activeJob == null || _activeJob!.isFinished) &&
+                _formatError == null) ...[
               // Top Bar
               Positioned(
                 top: 0,
@@ -847,7 +1127,10 @@ class _WatchScreenState extends State<WatchScreen> {
                           widget.item.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700),
                         ),
                       ),
                     ],
@@ -871,7 +1154,8 @@ class _WatchScreenState extends State<WatchScreen> {
                         position: Duration(seconds: _realSec),
                         duration: Duration(seconds: _effectiveSec),
                         buffered: _buffered,
-                        trickplayUrl: '${_api.baseUrl}/api/${widget.item.mediaKind == 'movie' ? 'movies' : 'episodes'}/${widget.item.mediaId}/trickplay',
+                        trickplayUrl:
+                            '${_api.baseUrl}/api/${widget.item.mediaKind == 'movie' ? 'movies' : 'episodes'}/${widget.item.mediaId}/trickplay',
                         token: _api.token,
                         onSeek: (target) => _seek(target.inSeconds),
                       ),
@@ -886,11 +1170,10 @@ class _WatchScreenState extends State<WatchScreen> {
                           IconButton(
                             color: Colors.white,
                             iconSize: 40,
-                            icon: Icon(_playing ? Icons.pause_circle_filled : Icons.play_circle_fill),
-                            onPressed: () async {
-                              _controller.toggle();
-                              if (_playing) _scheduleHide();
-                            },
+                            icon: Icon(_playing
+                                ? Icons.pause_circle_filled
+                                : Icons.play_circle_fill),
+                            onPressed: _togglePlayPause,
                           ),
                           IconButton(
                             color: Colors.white,
@@ -898,19 +1181,35 @@ class _WatchScreenState extends State<WatchScreen> {
                             onPressed: () => _seek(_realSec + 10),
                           ),
                           IconButton(
-                            color: _activeSubtitle != null ? const Color(0xFFE50914) : Colors.white,
+                            color: _activeSubtitle != null
+                                ? const Color(0xFFE50914)
+                                : Colors.white,
                             icon: const Icon(Icons.subtitles),
-                            onPressed: _tracksLoaded && _tracks.subtitles.isNotEmpty ? _openTrackSheet : null,
+                            onPressed:
+                                _tracksLoaded && _tracks.subtitles.isNotEmpty
+                                    ? _openTrackSheet
+                                    : null,
                           ),
                           IconButton(
                             color: Colors.white,
                             icon: const Icon(Icons.settings_voice),
-                            onPressed: _tracksLoaded && _tracks.audio.length > 1 ? _openTrackSheet : null,
+                            onPressed: _tracksLoaded && _tracks.audio.length > 1
+                                ? _openTrackSheet
+                                : null,
                           ),
                           const Spacer(),
+                          IconButton(
+                            color: Colors.white,
+                            icon: Icon(_fullscreen
+                                ? Icons.fullscreen_exit
+                                : Icons.fullscreen),
+                            onPressed: _toggleFullscreen,
+                            tooltip: 'Fullscreen (F)',
+                          ),
                           Text(
                             '${_fmt(Duration(seconds: _realSec))} / ${_fmt(Duration(seconds: _effectiveSec))}',
-                            style: const TextStyle(color: Colors.white, fontSize: 13),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13),
                           ),
                         ],
                       ),
@@ -919,7 +1218,61 @@ class _WatchScreenState extends State<WatchScreen> {
                 ),
               ),
             ],
+
+            // Next-episode shortcut for shows near the end of an episode.
+            if (_nextEpisode != null &&
+                _effectiveSec > 300 &&
+                _realSec >= _effectiveSec - 300 &&
+                _formatError == null &&
+                _pendingDecision == null &&
+                (_activeJob == null || _activeJob!.isFinished))
+              Positioned(
+                bottom: 96,
+                right: 24,
+                child: Material(
+                  color: const Color(0xE6E50914),
+                  borderRadius: BorderRadius.circular(24),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(24),
+                    onTap: _openNextEpisode,
+                    child: const Padding(
+                      padding:
+                          EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.skip_next, color: Colors.white, size: 22),
+                          SizedBox(width: 8),
+                          Text('Next episode',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            if (kIsWeb)
+              Positioned.fill(
+                child: SubtitleOverlay(
+                  cues: _subtitleCues,
+                  position: Duration(seconds: _realSec),
+                  delay: Duration(milliseconds: (_subDelaySec * 1000).round()),
+                  style: _subtitleStyle,
+                  showPositionGuide: _controlsVisible,
+                  onPositionChanged: (offset) {
+                    final style =
+                        _subtitleStyle.copyWith(bottomOffset: offset);
+                    setState(() => _subtitleStyle = style);
+                    style.saveToPrefs();
+                  },
+                ),
+              ),
           ],
+        ),
         ),
       ),
     );

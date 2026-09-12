@@ -1,0 +1,1 @@
+Future<bool> toggleBrowserFullscreen() async => false;

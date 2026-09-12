@@ -128,6 +128,9 @@ class _ShowDetailScreenState extends State<ShowDetailScreen> {
                                           .padLeft(2, '0')}E${e.episode
                                           .toString()
                                           .padLeft(2, '0')}',
+                                      showId: sh.id,
+                                      season: e.season,
+                                      episode: e.episode,
                                     ),
                                   ),
                                 ),
