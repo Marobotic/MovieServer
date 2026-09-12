@@ -202,6 +202,7 @@ class MediaRequest {
   final int year;
   final String note;
   final String status;
+  final int tmdbId;
   final String createdAt;
 
   const MediaRequest({
@@ -213,6 +214,7 @@ class MediaRequest {
     required this.year,
     required this.note,
     required this.status,
+    required this.tmdbId,
     required this.createdAt,
   });
 
@@ -225,6 +227,7 @@ class MediaRequest {
         year: j['year'] ?? 0,
         note: j['note'] ?? '',
         status: j['status'] ?? 'pending',
+        tmdbId: j['tmdb_id'] ?? 0,
         createdAt: j['created_at'] ?? '',
       );
 }
@@ -235,6 +238,8 @@ class TMDbHit {
   final int year;
   final String overview;
   final String poster;
+  final String backdrop;
+  final String trailerUrl;
   final String type;
 
   const TMDbHit({
@@ -243,6 +248,8 @@ class TMDbHit {
     required this.year,
     required this.overview,
     required this.poster,
+    this.backdrop = '',
+    this.trailerUrl = '',
     required this.type,
   });
 
@@ -252,7 +259,29 @@ class TMDbHit {
         year: j['year'] ?? 0,
         overview: j['overview'] ?? '',
         poster: j['poster'] ?? '',
+        backdrop: j['backdrop'] ?? '',
+        trailerUrl: j['trailer_url'] ?? '',
         type: j['type'] ?? 'movie',
+      );
+}
+
+class CatalogPage {
+  final int page;
+  final int totalPages;
+  final List<TMDbHit> results;
+
+  const CatalogPage({
+    required this.page,
+    required this.totalPages,
+    required this.results,
+  });
+
+  factory CatalogPage.fromJson(Map<String, dynamic> j) => CatalogPage(
+        page: j['page'] ?? 1,
+        totalPages: j['total_pages'] ?? 1,
+        results: (j['results'] as List? ?? const [])
+            .map((e) => TMDbHit.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
       );
 }
 
@@ -454,8 +483,7 @@ class PlaybackDecision {
     required this.nativeOK,
   });
 
-  factory PlaybackDecision.fromJson(Map<String, dynamic> j) =>
-      PlaybackDecision(
+  factory PlaybackDecision.fromJson(Map<String, dynamic> j) => PlaybackDecision(
         decision: j['decision'] as String? ?? 'damaged',
         title: j['title'] as String? ?? '',
         url: j['url'] as String? ?? '',
@@ -464,9 +492,20 @@ class PlaybackDecision {
         estimate: j['estimate'] == null
             ? null
             : PlaybackEstimate.fromJson(j['estimate']),
-        job: j['job'] == null
-            ? null
-            : PlaybackJobBrief.fromJson(j['job']),
+        job: j['job'] == null ? null : PlaybackJobBrief.fromJson(j['job']),
         nativeOK: j['native_ok'] as bool? ?? false,
+      );
+}
+
+class LogLine {
+  final DateTime time;
+  final String text;
+
+  const LogLine({required this.time, required this.text});
+
+  factory LogLine.fromJson(Map<String, dynamic> j) => LogLine(
+        time: DateTime.tryParse(j['time'] as String? ?? '')?.toLocal() ??
+            DateTime.now(),
+        text: j['text'] as String? ?? '',
       );
 }

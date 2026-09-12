@@ -1,4 +1,6 @@
 
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -53,6 +55,7 @@ class _AdminScreenState extends State<AdminScreen> {
                 (0, 'Library'),
                 (1, 'Requests'),
                 (2, 'Users'),
+                (3, 'Logs'),
               ])
                 ChoiceChip(
                   label: Text(label),
@@ -73,6 +76,7 @@ class _AdminScreenState extends State<AdminScreen> {
               _LibrarySection(),
               _AdminRequests(),
               _UsersSection(),
+              _LogsSection(),
             ],
           ),
         ),
@@ -784,5 +788,148 @@ class _EditUserDialog {
     if (res != true) return null;
     final pw = pass.text;
     return (pw.isEmpty ? null : pw, role);
+  }
+}
+
+// ---- Server logs ----
+
+class _LogsSection extends StatefulWidget {
+  const _LogsSection();
+
+  @override
+  State<_LogsSection> createState() => _LogsSectionState();
+}
+
+class _LogsSectionState extends State<_LogsSection> {
+  final TextEditingController _q = TextEditingController();
+  Timer? _timer;
+  List<LogLine> _lines = [];
+  String _error = '';
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+    _timer = Timer.periodic(const Duration(seconds: 6), (_) => _reload());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _q.dispose();
+    super.dispose();
+  }
+
+  Future<void> _reload() async {
+    final api = context.read<Api>();
+    try {
+      final lines = await api.fetchLogs(limit: 300, q: _q.text.trim());
+      if (!mounted) return;
+      setState(() {
+        _lines = lines;
+        _error = '';
+        _loading = false;
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = '$e';
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  String _hm(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _q,
+                  onSubmitted: (_) => _reload(),
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: 'Filter server log...',
+                    hintStyle: const TextStyle(color: Colors.white38),
+                    prefixIcon: const Icon(Icons.search,
+                        color: Colors.white38, size: 20),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.close,
+                          color: Colors.white38, size: 18),
+                      onPressed: () {
+                        _q.clear();
+                        _reload();
+                      },
+                    ),
+                    filled: true,
+                    fillColor: const Color(0xFF262626),
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.refresh, color: Colors.white70),
+                onPressed: _reload,
+                tooltip: 'Refresh',
+              ),
+            ],
+          ),
+        ),
+        if (_error.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            child: Text('Cannot load logs: $_error',
+                style: const TextStyle(
+                    color: Colors.orangeAccent, fontSize: 12)),
+          ),
+        Expanded(
+          child: _loading && _lines.isEmpty
+              ? const Center(
+                  child: CircularProgressIndicator(color: Colors.white70))
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                  itemCount: _lines.length,
+                  itemBuilder: (context, i) {
+                    final l = _lines[i];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text.rich(
+                        TextSpan(children: [
+                          TextSpan(
+                            text: '${_hm(l.time)}  ',
+                            style: const TextStyle(
+                                color: Colors.white38,
+                                fontFamily: 'monospace',
+                                fontSize: 12),
+                          ),
+                          TextSpan(
+                            text: l.text,
+                            style: const TextStyle(
+                                color: Colors.white70,
+                                fontFamily: 'monospace',
+                                fontSize: 12),
+                          ),
+                        ]),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
   }
 }

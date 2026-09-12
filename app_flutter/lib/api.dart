@@ -319,7 +319,8 @@ class Api {
   /// Preflight: what will happen if this item is played on this client.
   Future<PlaybackDecision> playback(String mediaKind, int id,
       {String client = 'web'}) async {
-    final r = await _request('GET', '/api/${_pluralKind(mediaKind)}/$id/playback',
+    final r = await _request(
+        'GET', '/api/${_pluralKind(mediaKind)}/$id/playback',
         query: {'client': client});
     return PlaybackDecision.fromJson(r);
   }
@@ -354,6 +355,14 @@ class Api {
   Future<Map<String, dynamic>> scan() async =>
       Map<String, dynamic>.from(await _request('POST', '/api/admin/scan'));
 
+  Future<List<LogLine>> fetchLogs({int limit = 300, String q = ''}) async {
+    final r = await _request('GET', '/api/admin/logs',
+        query: {'limit': '$limit', if (q.isNotEmpty) 'q': q});
+    return ((r as Map<String, dynamic>)['lines'] as List? ?? [])
+        .map((l) => LogLine.fromJson(Map<String, dynamic>.from(l)))
+        .toList();
+  }
+
   Future<Map<String, dynamic>> downloadSubtitles() async =>
       Map<String, dynamic>.from(await _request('POST', '/api/admin/subs'));
 
@@ -362,6 +371,26 @@ class Api {
         query: {'q': query, 'type': type});
     return (r as List).map((e) => TMDbHit.fromJson(e)).toList();
   }
+
+  Future<CatalogPage> catalog({
+    required String type,
+    required String category,
+    String query = '',
+    int page = 1,
+  }) async {
+    final r =
+        Map<String, dynamic>.from(await _request('GET', '/api/catalog', query: {
+      'type': type,
+      'category': category,
+      'q': query,
+      'page': '$page',
+    }));
+    return CatalogPage.fromJson(r);
+  }
+
+  Future<TMDbHit> catalogDetail(String type, int id) async =>
+      TMDbHit.fromJson(Map<String, dynamic>.from(
+          await _request('GET', '/api/catalog/$type/$id')));
 
   // ---- upload ----
 
@@ -438,4 +467,3 @@ class Api {
     await _request('DELETE', '/api/webcopies/${_pluralKind(kind)}/$id');
   }
 }
-
