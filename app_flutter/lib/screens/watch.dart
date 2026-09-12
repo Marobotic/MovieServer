@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../api.dart';
 import '../fullscreen.dart';
+import '../keyboard.dart';
 import '../models.dart';
 import '../playback.dart';
 import '../subtitles/overlay.dart';
@@ -79,6 +80,7 @@ class _WatchScreenState extends State<WatchScreen> {
   bool _fullscreen = false;
   Episode? _nextEpisode;
   bool _nextChecked = false;
+  void Function()? _webKeyUninstall;
 
   @override
   void initState() {
@@ -87,7 +89,34 @@ class _WatchScreenState extends State<WatchScreen> {
     _controller = createPlaybackController();
     _listen();
     _loadSubtitleStyle();
+    _webKeyUninstall = installWebKeyHandler(_onWebKeyCode);
     _open();
+  }
+
+  bool _onWebKeyCode(String code) {
+    switch (code) {
+      case 'Space':
+        _togglePlayPause();
+        return true;
+      case 'KeyF':
+      case 'F11':
+        _toggleFullscreen();
+        return true;
+      case 'ArrowRight':
+        _seek(_realSec + 10);
+        return true;
+      case 'ArrowLeft':
+        _seek(_realSec - 10);
+        return true;
+      case 'Escape':
+        if (_fullscreen) {
+          _toggleFullscreen();
+          return true;
+        }
+        return false;
+      default:
+        return false;
+    }
   }
 
   Future<void> _loadSubtitleStyle() async {
@@ -592,6 +621,9 @@ class _WatchScreenState extends State<WatchScreen> {
   }
 
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    if (kIsWeb) {
+      return KeyEventResult.ignored;
+    }
     if (event is! KeyDownEvent || event is KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
@@ -770,6 +802,7 @@ class _WatchScreenState extends State<WatchScreen> {
 
   @override
   void dispose() {
+    _webKeyUninstall?.call();
     _hideTimer?.cancel();
     _progressTimer?.cancel();
     _jobPollTimer?.cancel();
