@@ -7,14 +7,14 @@ external JSPromise _exitFullscreen();
 external JSPromise _requestFullscreen();
 
 @JS('document.fullscreenElement')
-external JSAny? _fullscreenElement();
+external JSAny? get _fullscreenElement;
 
 Future<bool> toggleBrowserFullscreen() async {
-  if (_fullscreenElement() == null) {
+  if (_fullscreenElement == null) {
     try {
       await _requestFullscreen().toDart;
     } catch (_) {}
-    return _fullscreenElement() != null;
+    return _fullscreenElement != null;
   }
   try {
     await _exitFullscreen().toDart;
