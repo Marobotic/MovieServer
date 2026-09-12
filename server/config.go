@@ -21,6 +21,9 @@ type ServerConfig struct {
 	OSTPass       string `json:"opensubtitles_password,omitempty"`
 	OSTApiKey     string `json:"opensubtitles_api_key,omitempty"`
 	WebFrontend   string `json:"web_frontend,omitempty"`
+	WebcopiesDir  string `json:"webcopies_dir,omitempty"`
+	MaxJobs       int    `json:"max_concurrent_jobs,omitempty"`
+	AutoQuickFix  bool   `json:"auto_approve_quick_fix,omitempty"`
 }
 
 // defaultConfig returns a usable config with defaults applied.

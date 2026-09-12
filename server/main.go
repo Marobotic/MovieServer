@@ -89,6 +89,8 @@ func newServer(configPath *string) (*Server, error) {
 		webDir:  conf.WebFrontend,
 	}
 
+	s.loadJobsOnStart()
+
 	if _, err := s.scanLibrary(); err != nil {
 		log.Printf("initial scan warning: %v", err)
 	}
@@ -160,6 +162,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("HEAD /api/episodes/{id}/stream", s.authMiddleware(s.handleEpisodeStream))
 	mux.HandleFunc("GET /api/movies/{id}/playback", s.authMiddleware(s.handlePlayback))
 	mux.HandleFunc("GET /api/episodes/{id}/playback", s.authMiddleware(s.handlePlayback))
+	mux.HandleFunc("GET /api/jobs", s.authMiddleware(s.handleListJobs))
+	mux.HandleFunc("GET /api/jobs/events", s.authMiddleware(s.handleJobEvents))
+	mux.HandleFunc("POST /api/jobs", s.requireAdmin(s.handleCreateJob))
+	mux.HandleFunc("POST /api/jobs/{id}/pause", s.requireAdmin(s.handleJobAction))
+	mux.HandleFunc("POST /api/jobs/{id}/resume", s.requireAdmin(s.handleJobAction))
+	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.requireAdmin(s.handleJobAction))
+	mux.HandleFunc("DELETE /api/webcopies/movies/{id}", s.requireAdmin(s.handleDeleteWebcopy))
+	mux.HandleFunc("DELETE /api/webcopies/episodes/{id}", s.requireAdmin(s.handleDeleteWebcopy))
 
 	// HLS transcoding (browsers cannot play MKV/HEVC directly)
 	mux.HandleFunc("GET /api/movies/{id}/hls/master.m3u8", s.authMiddleware(s.handleHLSMaster))
@@ -176,6 +186,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/episodes/{id}/subtitles/{index}", s.authMiddleware(s.handleSubtitle))
 	mux.HandleFunc("GET /api/movies/{id}/detect", s.authMiddleware(s.handleDetect))
 	mux.HandleFunc("GET /api/episodes/{id}/detect", s.authMiddleware(s.handleDetect))
+	mux.HandleFunc("GET /api/movies/{id}/trickplay", s.authMiddleware(s.handleTrickplayManifest))
+	mux.HandleFunc("GET /api/episodes/{id}/trickplay", s.authMiddleware(s.handleTrickplayManifest))
+	mux.HandleFunc("GET /api/movies/{id}/trickplay/{file}", s.handleTrickplayImage)
+	mux.HandleFunc("GET /api/episodes/{id}/trickplay/{file}", s.handleTrickplayImage)
 
 	// requests (any authenticated user)
 	mux.HandleFunc("POST /api/requests", s.authMiddleware(s.handleCreateRequest))

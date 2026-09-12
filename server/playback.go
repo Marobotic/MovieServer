@@ -152,6 +152,24 @@ func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := decidePlayback(client, *c)
+	if client == clientWeb {
+		if j := s.activeJob(kind, id); j != nil {
+			d = playbackDecision{Decision: "preparing", Variant: "web",
+				Reason: "a prepare job is running", NativeOK: true}
+			writeJSON(w, 200, map[string]any{
+				"decision":   d.Decision,
+				"title":      title,
+				"url":        d.URL,
+				"variant":    d.Variant,
+				"reason":     d.Reason,
+				"estimate":   d.Estimate,
+				"job":        j.snapshot(),
+				"native_ok":  d.NativeOK,
+				"checked_at": c.CheckedAt,
+			})
+			return
+		}
+	}
 	if d.Decision == "play" {
 		d.URL = playbackURL(kind, id, d.Variant)
 	}
@@ -166,6 +184,17 @@ func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
 		"native_ok":  d.NativeOK,
 		"checked_at": c.CheckedAt,
 	})
+}
+
+func (s *Server) activeJob(kind string, id int64) *prepareJob {
+	jobMgr.mu.Lock()
+	defer jobMgr.mu.Unlock()
+	for _, j := range jobMgr.jobs {
+		if j.Kind == kind && j.MediaID == id && !j.finished() {
+			return j
+		}
+	}
+	return nil
 }
 
 func webcopyPath(dataDir, kind string, id int64) string {

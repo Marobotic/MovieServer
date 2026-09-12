@@ -211,6 +211,29 @@ CREATE TABLE IF NOT EXISTS media_checks (
 	checked_at    DATETIME,
 	UNIQUE(kind, media_id)
 );
+CREATE TABLE IF NOT EXISTS prepare_jobs (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	kind        TEXT NOT NULL,
+	media_id    INTEGER NOT NULL,
+	type        TEXT NOT NULL,
+	mode        TEXT NOT NULL DEFAULT 'now',
+	status      TEXT NOT NULL DEFAULT 'queued',
+	worker      TEXT NOT NULL DEFAULT 'cpu',
+	audio_index INTEGER NOT NULL DEFAULT 0,
+	src_path    TEXT NOT NULL DEFAULT '',
+	src_size    INTEGER NOT NULL DEFAULT 0,
+	src_mtime   INTEGER NOT NULL DEFAULT 0,
+	out_path    TEXT NOT NULL DEFAULT '',
+	percent     REAL NOT NULL DEFAULT 0,
+	speed       REAL NOT NULL DEFAULT 0,
+	fps         REAL NOT NULL DEFAULT 0,
+	eta_sec     INTEGER NOT NULL DEFAULT 0,
+	error       TEXT NOT NULL DEFAULT '',
+	requested_by TEXT NOT NULL DEFAULT '',
+	created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	started_at  DATETIME,
+	finished_at DATETIME
+);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
