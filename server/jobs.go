@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -47,6 +48,7 @@ type prepareJob struct {
 	srcMtime int64
 	durSec   int64
 	lastDB   time.Time
+	lastLog  time.Time
 }
 
 type jobManager struct {
@@ -98,6 +100,16 @@ func (s *Server) loadJobsOnStart() {
 			RequestedBy: w.RequestedBy,
 		}
 		jobMgr.jobs[j.ID] = j
+		// A finished web copy that already exists is the whole point of the
+		// job; don't re-do the work after a restart. Mark it done so playback
+		// serves the existing copy instead of gating on a stale job.
+		if s.webcopyExists(j.Kind, j.MediaID) {
+			j.Status = "done"
+			j.Percent = 100
+			_, _ = s.db.Exec(`UPDATE prepare_jobs SET status='done', percent=100 WHERE id=?`, j.ID)
+			s.markWebReady(j.Kind, j.MediaID)
+			continue
+		}
 		switch j.Status {
 		case "queued":
 			jobMgr.queue = append(jobMgr.queue, j)
@@ -111,9 +123,21 @@ func (s *Server) loadJobsOnStart() {
 	s.jobsInit()
 }
 
+// webcopyExists reports whether the finished web copy for an item is present
+// on disk. The final .mp4 is only created by a successful rename after
+// ffmpeg verification, so its presence means the work was already done.
+func (s *Server) webcopyExists(kind string, id int64) bool {
+	out := filepath.Join(s.webcopiesDir(), fmt.Sprintf("%s-%d.mp4", kind, id))
+	fi, err := os.Stat(out)
+	return err == nil && fi.Size() > 0
+}
+
 func (s *Server) refreshWebReadyClear(kind string, id int64) {
 	check := s.getCheck(kind, id)
 	if check != nil && check.State == classWebReady {
+		// checkMedia short-circuits when the source file is unchanged, so drop
+		// the cached row first to force a fresh probe and reclassification.
+		_, _ = s.db.Exec(`DELETE FROM media_checks WHERE kind=? AND media_id=?`, kind, id)
 		s.checkMedia(kind, id)
 	}
 }
@@ -344,6 +368,7 @@ func (s *Server) runJob(j *prepareJob) {
 	j.reprio()
 	j.persist(s, true)
 	s.markPreparing(j.Kind, j.MediaID)
+	log.Printf("job %d %s/%d %q: started (%s)", j.ID, j.Kind, j.MediaID, j.Title, j.Worker)
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -390,6 +415,7 @@ func (s *Server) runJob(j *prepareJob) {
 		j.setStatus("canceled")
 		j.persist(s, true)
 		s.refreshWebReadyClear(j.Kind, j.MediaID)
+		log.Printf("job %d %s/%d %q: canceled", j.ID, j.Kind, j.MediaID, j.Title)
 		return
 	}
 	if waitErr != nil {
@@ -400,6 +426,7 @@ func (s *Server) runJob(j *prepareJob) {
 		_ = os.Remove(j.part)
 		_ = os.Remove(j.part + ".log")
 		s.refreshWebReadyClear(j.Kind, j.MediaID)
+		log.Printf("job %d %s/%d %q: failed (%s)", j.ID, j.Kind, j.MediaID, j.Title, j.Error)
 		return
 	}
 	if _, err := os.Stat(j.part); err != nil {
@@ -407,6 +434,7 @@ func (s *Server) runJob(j *prepareJob) {
 		j.setStatus("failed")
 		j.persist(s, true)
 		s.refreshWebReadyClear(j.Kind, j.MediaID)
+		log.Printf("job %d %s/%d %q: failed (%s)", j.ID, j.Kind, j.MediaID, j.Title, j.Error)
 		return
 	}
 	if verr := verifyWebcopy(j.part, j.durSec, j.Type); verr != nil {
@@ -415,6 +443,7 @@ func (s *Server) runJob(j *prepareJob) {
 		j.persist(s, true)
 		_ = os.Remove(j.part)
 		s.refreshWebReadyClear(j.Kind, j.MediaID)
+		log.Printf("job %d %s/%d %q: failed (%s)", j.ID, j.Kind, j.MediaID, j.Title, j.Error)
 		return
 	}
 	if err := os.Rename(j.part, out); err != nil {
@@ -422,6 +451,7 @@ func (s *Server) runJob(j *prepareJob) {
 		j.setStatus("failed")
 		j.persist(s, true)
 		s.refreshWebReadyClear(j.Kind, j.MediaID)
+		log.Printf("job %d %s/%d %q: failed (%s)", j.ID, j.Kind, j.MediaID, j.Title, j.Error)
 		return
 	}
 	j.mu.Lock()
@@ -431,6 +461,7 @@ func (s *Server) runJob(j *prepareJob) {
 	j.setStatus("done")
 	j.persist(s, true)
 	s.markWebReady(j.Kind, j.MediaID)
+	log.Printf("job %d %s/%d %q: done (%s web copy)", j.ID, j.Kind, j.MediaID, j.Title, j.Worker)
 }
 
 func (j *prepareJob) reprio() {
@@ -665,7 +696,32 @@ func (s *Server) progressReader(j *prepareJob, r *os.File) {
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 	for sc.Scan() {
 		j.applyProgress(sc.Text())
+		j.logDetailed(s)
 	}
+}
+
+// logDetailed writes a job progress line to the shared log ring, throttled to
+// roughly one line every 5 seconds so the admin logs stay readable.
+func (j *prepareJob) logDetailed(s *Server) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.Status != "running" || j.Percent <= 0 {
+		return
+	}
+	if !j.lastLog.IsZero() && time.Since(j.lastLog) < 5*time.Second {
+		return
+	}
+	j.lastLog = time.Now()
+	eta := ""
+	if j.ETASec > 0 {
+		eta = fmt.Sprintf(" ~%dm", (j.ETASec+59)/60)
+	}
+	title := strings.TrimSpace(j.Title)
+	if title == "" {
+		title = s.jobTitle(j.Kind, j.MediaID)
+	}
+	log.Printf("job %d %s/%d %q: %.1f%% @ %.1fx%s (%s)", j.ID, j.Kind, j.MediaID,
+		title, j.Percent, j.Speed, eta, j.Worker)
 }
 
 func (j *prepareJob) applyProgress(line string) {

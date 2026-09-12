@@ -152,10 +152,15 @@ func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := decidePlayback(client, *c)
-	if client == clientWeb {
+	if client == clientWeb && c.State != classWebReady && c.State != classWebDirect {
 		if j := s.activeJob(kind, id); j != nil {
 			d = playbackDecision{Decision: "preparing", Variant: "web",
 				Reason: "a prepare job is running", NativeOK: true}
+			pos, active := s.queueInfo(j)
+			var activeSnap map[string]any
+			if active != nil {
+				activeSnap = active.snapshot()
+			}
 			writeJSON(w, 200, map[string]any{
 				"decision":   d.Decision,
 				"title":      title,
@@ -164,6 +169,8 @@ func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
 				"reason":     d.Reason,
 				"estimate":   d.Estimate,
 				"job":        j.snapshot(),
+				"queue_pos":  pos,
+				"active_job": activeSnap,
 				"native_ok":  d.NativeOK,
 				"checked_at": c.CheckedAt,
 			})
@@ -195,6 +202,29 @@ func (s *Server) activeJob(kind string, id int64) *prepareJob {
 		}
 	}
 	return nil
+}
+
+// queueInfo returns the item's position in line for its active job (1 = it is
+// running now) and the job that is currently running, if any. This lets the
+// watch screen show "you are #N in line, currently preparing <title>" instead
+// of a frozen 0%.
+func (s *Server) queueInfo(j *prepareJob) (int, *prepareJob) {
+	jobMgr.mu.Lock()
+	defer jobMgr.mu.Unlock()
+	var running *prepareJob
+	pos := 1
+	for _, q := range jobMgr.queue {
+		if q.Status == "running" && running == nil {
+			running = q
+		}
+		if q == j {
+			return pos, running
+		}
+		if q.Status == "running" || q.Status == "queued" {
+			pos++
+		}
+	}
+	return pos, running
 }
 
 func webcopyPath(dataDir, kind string, id int64) string {
