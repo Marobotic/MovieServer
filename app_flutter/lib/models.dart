@@ -470,6 +470,8 @@ class PlaybackDecision {
   final String reason;
   final PlaybackEstimate? estimate;
   final PlaybackJobBrief? job;
+  final int queuePos;
+  final PlaybackJobBrief? activeJob;
   final bool nativeOK;
 
   PlaybackDecision({
@@ -480,6 +482,8 @@ class PlaybackDecision {
     required this.reason,
     this.estimate,
     this.job,
+    this.queuePos = 0,
+    this.activeJob,
     required this.nativeOK,
   });
 
@@ -493,6 +497,10 @@ class PlaybackDecision {
             ? null
             : PlaybackEstimate.fromJson(j['estimate']),
         job: j['job'] == null ? null : PlaybackJobBrief.fromJson(j['job']),
+        queuePos: j['queue_pos'] as int? ?? 0,
+        activeJob: j['active_job'] == null
+            ? null
+            : PlaybackJobBrief.fromJson(j['active_job']),
         nativeOK: j['native_ok'] as bool? ?? false,
       );
 }

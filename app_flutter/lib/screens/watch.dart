@@ -70,6 +70,8 @@ class _WatchScreenState extends State<WatchScreen> {
 
   PlaybackDecision? _pendingDecision;
   PlaybackJobBrief? _activeJob;
+  PlaybackJobBrief? _activeQueueJob;
+  int _queuePos = 0;
   List<SubtitleCue> _subtitleCues = [];
   SubtitleStyle _subtitleStyle = const SubtitleStyle();
 
@@ -152,6 +154,8 @@ class _WatchScreenState extends State<WatchScreen> {
         } else if (decision.decision == 'preparing') {
           setState(() {
             _activeJob = decision.job;
+            _activeQueueJob = decision.activeJob;
+            _queuePos = decision.queuePos;
             _pendingDecision = null;
             _formatError = null;
             _buffering = false;
@@ -221,7 +225,11 @@ class _WatchScreenState extends State<WatchScreen> {
         }
 
         if (pf.job != null) {
-          setState(() => _activeJob = pf.job);
+          setState(() {
+            _activeJob = pf.job;
+            _activeQueueJob = pf.activeJob;
+            _queuePos = pf.queuePos;
+          });
           if (pf.job!.isDone) {
             _jobPollTimer?.cancel();
             _open();
@@ -371,12 +379,13 @@ class _WatchScreenState extends State<WatchScreen> {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF1F1F1F),
-      builder: (sheetCtx) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setSheetState) => SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
               const Padding(
                 padding: EdgeInsets.fromLTRB(20, 16, 20, 4),
                 child: Text('Subtitles',
@@ -456,7 +465,9 @@ class _WatchScreenState extends State<WatchScreen> {
                         value: _subDelaySec.clamp(-10.0, 10.0),
                         activeColor: const Color(0xFFE50914),
                         onChanged: (v) {
-                          setState(() => _subDelaySec = v);
+                          _subDelaySec = v;
+                          setSheetState(() {});
+                          setState(() {});
                           _controller.setSubtitleDelay(
                               Duration(milliseconds: (v * 1000).round()));
                         },
@@ -506,7 +517,8 @@ class _WatchScreenState extends State<WatchScreen> {
                     },
                   )),
               const SizedBox(height: 8),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -886,6 +898,16 @@ class _WatchScreenState extends State<WatchScreen> {
 
     final isGaming = job.status == 'paused_gaming';
     final isAdmin = _api.user?.isAdmin ?? false;
+    final queuedBehind =
+        job.isQueued && _activeQueueJob != null && _queuePos > 1;
+
+    // The percent/speed/eta shown come from whatever job is actually burning
+    // the CPU: this item's own job when it's running, or the job at the front
+    // of the line while we're queued behind it.
+    final liveJob = queuedBehind ? _activeQueueJob! : job;
+    final displayPercent = liveJob.percent;
+    final displaySpeed = liveJob.speed;
+    final displayEta = liveJob.etaSec;
 
     return Center(
       child: Container(
@@ -931,7 +953,7 @@ class _WatchScreenState extends State<WatchScreen> {
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
-                    '${job.percent.toStringAsFixed(1)}%',
+                    '${displayPercent.toStringAsFixed(1)}%',
                     style: TextStyle(
                       color: isGaming ? Colors.amber : const Color(0xFFE50914),
                       fontWeight: FontWeight.bold,
@@ -945,7 +967,7 @@ class _WatchScreenState extends State<WatchScreen> {
             ClipRRect(
               borderRadius: BorderRadius.circular(4),
               child: LinearProgressIndicator(
-                value: (job.percent / 100).clamp(0.0, 1.0),
+                value: (displayPercent / 100).clamp(0.0, 1.0),
                 minHeight: 8,
                 backgroundColor: Colors.white12,
                 color: isGaming ? Colors.amber : const Color(0xFFE50914),
@@ -965,13 +987,30 @@ class _WatchScreenState extends State<WatchScreen> {
                 ),
                 Text(
                   [
-                    if (job.speed > 0) '${job.speed.toStringAsFixed(1)}x',
-                    if (job.etaSec > 0) '${(job.etaSec / 60).ceil()}m left',
+                    if (displaySpeed > 0) '${displaySpeed.toStringAsFixed(1)}x',
+                    if (displayEta > 0) '${(displayEta / 60).ceil()}m left',
                   ].join(' · '),
                   style: const TextStyle(color: Colors.white38, fontSize: 12),
                 ),
               ],
             ),
+            if (queuedBehind) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'You are #$_queuePos in line. Preparing '
+                      '${_activeQueueJob!.title.isEmpty ? 'another item' : _activeQueueJob!.title} first...',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 20),
             if (isAdmin)
               Row(
