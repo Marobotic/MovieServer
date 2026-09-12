@@ -1,12 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../api.dart';
 import '../models.dart';
 import '../playback.dart';
+import '../subtitles/overlay.dart';
+import '../subtitles/parser.dart';
+import '../widgets/seek_bar.dart';
 
 class PlayableItem {
   final String mediaKind; // movie | episode | external
@@ -37,12 +42,14 @@ class _WatchScreenState extends State<WatchScreen> {
   late final Api _api;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
+  Duration _buffered = Duration.zero;
   Duration _offset = Duration.zero;
   bool _playing = false;
   bool _buffering = true;
   bool _controlsVisible = true;
   Timer? _hideTimer;
   Timer? _progressTimer;
+  Timer? _jobPollTimer;
   final List<StreamSubscription> _subs = [];
   Duration _disposePos = Duration.zero;
   MediaTracks _tracks = const MediaTracks.empty();
@@ -51,6 +58,10 @@ class _WatchScreenState extends State<WatchScreen> {
   int? _activeAudio;
   double _subDelaySec = 0;
   String? _formatError;
+
+  PlaybackDecision? _pendingDecision;
+  PlaybackJobBrief? _activeJob;
+  List<SubtitleCue> _subtitleCues = [];
 
   @override
   void initState() {
@@ -65,9 +76,9 @@ class _WatchScreenState extends State<WatchScreen> {
     final api = _api;
     String? url;
     Duration startAt = Duration.zero;
-    String? blockReason;
     final isLibrary = widget.item.mediaKind == 'movie' ||
         widget.item.mediaKind == 'episode';
+
     if (widget.item.externalUrl != null && widget.externalUrl != null) {
       url = widget.externalUrl!;
     } else if (isLibrary) {
@@ -82,58 +93,127 @@ class _WatchScreenState extends State<WatchScreen> {
           }
         }
       } catch (_) {}
+
       PlaybackDecision? pf;
       try {
         pf = await api.playback(widget.item.mediaKind, widget.item.mediaId,
             client: kIsWeb ? 'web' : 'native');
       } catch (e) {
-        blockReason = 'Playback check failed ($e). Try again.';
+        if (mounted) {
+          setState(() {
+            _formatError = 'Playback check failed ($e). Try again.';
+            _buffering = false;
+          });
+        }
+        return;
       }
-      if (pf != null) {
-        if (pf.decision == 'play') {
-          if (kIsWeb) {
-            url = _webUrl(pf.url);
-          } else {
-            url = api.streamUrl(widget.item.mediaKind, widget.item.mediaId);
-          }
+
+      final decision = pf;
+      if (decision != null) {
+        if (decision.decision == 'play') {
+          url = kIsWeb
+              ? _webUrl(decision.url)
+              : api.streamUrl(widget.item.mediaKind, widget.item.mediaId);
+          setState(() {
+            _pendingDecision = null;
+            _activeJob = null;
+            _formatError = null;
+          });
+        } else if (decision.decision == 'needs_quick_fix' || decision.decision == 'needs_encode') {
+          setState(() {
+            _pendingDecision = decision;
+            _activeJob = null;
+            _formatError = null;
+            _buffering = false;
+          });
+          return;
+        } else if (decision.decision == 'preparing') {
+          setState(() {
+            _activeJob = decision.job;
+            _pendingDecision = null;
+            _formatError = null;
+            _buffering = false;
+          });
+          _startJobPolling();
+          return;
         } else {
-          blockReason = _playbackBlockMessage(pf);
+          // damaged or still_copying
+          setState(() {
+            _formatError = decision.reason.isNotEmpty
+                ? decision.reason
+                : (decision.decision == 'damaged'
+                    ? 'This file is damaged and cannot be played.'
+                    : 'Still being copied to the server. Try again shortly.');
+            _buffering = false;
+          });
+          return;
         }
       }
     } else {
       url = api.streamUrl(widget.item.mediaKind, widget.item.mediaId);
     }
-    if (url == null && blockReason == null) {
-      blockReason = 'Playback check unavailable. Try again.';
-    }
+
     if (!mounted) return;
     _loadTracks();
-    if (blockReason != null) {
+
+    if (url == null) {
       setState(() {
-        _formatError = blockReason;
+        _formatError = 'No stream URL available.';
         _buffering = false;
       });
       return;
     }
+
     if (kIsWeb) {
       _offset = Duration.zero;
       try {
-        await _controller.open(url!);
+        await _controller.open(url);
         if (startAt.inSeconds > 15) {
           await _controller.seek(startAt);
         }
       } catch (_) {}
     } else {
-      await _controller.open(url!, startAt: startAt);
+      await _controller.open(url, startAt: startAt);
       _offset = startAt;
       await _loadTracks();
       _applyPreferredAudio();
     }
+
     await _controller.play();
     _startProgressTimer();
   }
 
-  // Server paths come back without a token; the <video> element needs one.
+  void _startJobPolling() {
+    _jobPollTimer?.cancel();
+    _jobPollTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      try {
+        final pf = await _api.playback(widget.item.mediaKind, widget.item.mediaId,
+            client: kIsWeb ? 'web' : 'native');
+        if (!mounted) return;
+
+        if (pf.decision == 'play') {
+          _jobPollTimer?.cancel();
+          _open();
+          return;
+        }
+
+        if (pf.job != null) {
+          setState(() => _activeJob = pf.job);
+          if (pf.job!.isDone) {
+            _jobPollTimer?.cancel();
+            _open();
+          } else if (pf.job!.isFailed) {
+            _jobPollTimer?.cancel();
+            setState(() {
+              _formatError = 'Preparation failed: ${pf.job!.error}';
+              _activeJob = null;
+            });
+          }
+        }
+      } catch (_) {}
+    });
+  }
+
   String _webUrl(String path) {
     final u = Uri.parse('${_api.baseUrl}$path');
     return u
@@ -141,36 +221,38 @@ class _WatchScreenState extends State<WatchScreen> {
         .toString();
   }
 
-  String _playbackBlockMessage(PlaybackDecision pf) {
-    if (pf.decision == 'damaged' || pf.decision == 'still_copying') {
-      if (pf.reason.isNotEmpty) return pf.reason;
-      return pf.decision == 'damaged'
-          ? 'This file is damaged and cannot be played.'
-          : 'Still being copied to the server. Try again in a few minutes.';
-    }
-    final est = pf.estimate;
-    final detail = est == null
-        ? ''
-        : 'About ${est.minutes} min, '
-            '${est.worker == 'gpu' ? 'GPU encode' : 'one CPU core'}'
-            '${est.sizeGB != null ? ', about ${est.sizeGB} GB' : ''}.';
-    if (_api.user?.isAdmin ?? false) {
-      return '${pf.title} can\'t play in the browser as it is.\n${pf.reason}\n$detail';
-    }
-    _askMaro();
-    return 'Not ready on this device yet. Maro has been asked to prepare it.\n${pf.reason}';
-  }
-
-  Future<void> _askMaro() async {
+  Future<void> _startPrepare(PlaybackDecision pf, String mode) async {
+    final type = pf.decision == 'needs_encode' ? 'encode' : 'quick_fix';
     try {
-      await _api.createRequest(
-          'prepare', widget.item.title, 0, 'Prepare for web browser', 0);
-    } catch (_) {}
+      final job = await _api.createJob(
+        widget.item.mediaKind,
+        widget.item.mediaId,
+        type,
+        mode: mode,
+      );
+      if (mounted) {
+        setState(() {
+          _pendingDecision = null;
+          _activeJob = job;
+        });
+        if (mode == 'now') {
+          _startJobPolling();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Scheduled for tonight.')),
+          );
+          Navigator.of(context).pop();
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to start job: $e')),
+        );
+      }
+    }
   }
 
-  // Native players pick the audio stream by the profile's preferred language
-  // (default eng) instead of defaulting to whatever stream is first in the
-  // file (e.g. an Italian dub).
   Future<void> _applyPreferredAudio() async {
     if (kIsWeb) return;
     if (_tracks.audio.isEmpty) return;
@@ -195,32 +277,49 @@ class _WatchScreenState extends State<WatchScreen> {
     } catch (_) {}
   }
 
-  // Seeking works natively for direct file playback on every platform. The
-  // resume offset only applies to native players (started via startAt).
   Future<void> _seek(int targetSec) async {
-    setState(() => _buffering = true);
     final rel = targetSec - _offset.inSeconds;
     final target = Duration(seconds: rel < 0 ? 0 : rel);
     try {
       await _controller.seek(target);
     } catch (_) {}
-    if (mounted) {
-      setState(() => _buffering = false);
-    }
   }
 
   Future<void> _loadTracks() async {
     if (_tracksLoaded || widget.item.externalUrl != null) return;
-    final api = context.read<Api>();
     try {
-      final t = await api.tracks(widget.item.mediaKind, widget.item.mediaId);
-      setState(() {
-        _tracks = t;
-        _tracksLoaded = true;
-      });
+      final t = await _api.tracks(widget.item.mediaKind, widget.item.mediaId);
+      if (mounted) {
+        setState(() {
+          _tracks = t;
+          _tracksLoaded = true;
+        });
+      }
     } catch (_) {
-      setState(() => _tracksLoaded = true);
+      if (mounted) setState(() => _tracksLoaded = true);
     }
+  }
+
+  Future<void> _selectSubtitle(int? index, String? url) async {
+    setState(() => _activeSubtitle = index);
+    if (index == null || url == null) {
+      setState(() => _subtitleCues = []);
+      _controller.setSubtitle(null);
+      return;
+    }
+
+    _controller.setSubtitle(url);
+    try {
+      final res = await http.get(Uri.parse(url), headers: {
+        if (_api.token != null) 'Authorization': 'Bearer ${_api.token}',
+      });
+      if (res.statusCode == 200) {
+        final cues = SubtitleParser.parse(utf8.decode(res.bodyBytes));
+        if (mounted) {
+          setState(() => _subtitleCues = cues);
+        }
+      }
+    } catch (_) {}
   }
 
   void _openTrackSheet() {
@@ -229,131 +328,118 @@ class _WatchScreenState extends State<WatchScreen> {
       context: context,
       backgroundColor: const Color(0xFF1F1F1F),
       builder: (sheetCtx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-              child: Text('Subtitles',
-                  style: TextStyle(
-                      color: Colors.white70,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.5)),
-            ),
-            ListTile(
-              leading: const Icon(Icons.subtitles_off, color: Colors.white),
-              title: const Text('Off', style: TextStyle(color: Colors.white)),
-              trailing: _activeSubtitle == null
-                  ? const Icon(Icons.check, color: Color(0xFFE50914))
-                  : null,
-              onTap: () async {
-                _controller.setSubtitle(null);
-                setState(() => _activeSubtitle = null);
-                Navigator.of(sheetCtx).pop();
-              },
-            ),
-            if (_tracksLoaded && _tracks.subtitles.isEmpty)
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               const Padding(
-                padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
-                child: Text('No external subtitles found',
-                    style: TextStyle(color: Colors.white38, fontSize: 13)),
+                padding: EdgeInsets.fromLTRB(20, 16, 20, 4),
+                child: Text('Subtitles',
+                    style: TextStyle(
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5)),
               ),
-            ..._tracks.subtitles.map((s) => ListTile(
-                  leading: const Icon(Icons.subtitles, color: Colors.white70),
-                  title:
-                      Text(s.name, style: const TextStyle(color: Colors.white)),
-                  subtitle: s.language.isNotEmpty
-                      ? Text(s.language,
-                          style: const TextStyle(color: Colors.white38))
-                      : null,
-                  trailing: _activeSubtitle == s.index
-                      ? const Icon(Icons.check, color: Color(0xFFE50914))
-                      : null,
-                  onTap: () async {
-                    final api = context.read<Api>();
-                    _controller.setSubtitle(
-                        api.subtitleUrl(widget.item.mediaKind,
-                            widget.item.mediaId, s.index),
-                        language: s.language.isEmpty ? s.name : s.language);
-                    setState(() => _activeSubtitle = s.index);
-                    Navigator.of(sheetCtx).pop();
-                  },
-                )),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              child: Text('Subtitle delay',
-                  style: TextStyle(
-                      color: Colors.white70,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.5)),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
-              child: Row(
-                children: [
-                  const Icon(Icons.slow_motion_video,
-                      color: Colors.white54, size: 20),
-                  Expanded(
-                    child: Slider(
-                      min: -10,
-                      max: 10,
-                      divisions: 400,
-                      value: _subDelaySec.clamp(-10.0, 10.0),
-                      activeColor: const Color(0xFFE50914),
-                      onChanged: (v) {
-                        setState(() => _subDelaySec = v);
-                      },
-                      onChangeEnd: (v) {
-                        _controller.setSubtitleDelay(
-                            Duration(milliseconds: (v * 1000).round()));
-                      },
-                    ),
-                  ),
-                  SizedBox(
-                    width: 54,
-                    child: Text(
-                      '${_subDelaySec >= 0 ? '+' : ''}${_subDelaySec.toStringAsFixed(1)}s',
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                      textAlign: TextAlign.right,
-                    ),
-                  ),
-                ],
+              ListTile(
+                leading: const Icon(Icons.subtitles_off, color: Colors.white),
+                title: const Text('Off', style: TextStyle(color: Colors.white)),
+                trailing: _activeSubtitle == null
+                    ? const Icon(Icons.check, color: Color(0xFFE50914))
+                    : null,
+                onTap: () {
+                  _selectSubtitle(null, null);
+                  Navigator.of(sheetCtx).pop();
+                },
               ),
-            ),
-            const Divider(
-                color: Colors.white12, height: 24, indent: 20, endIndent: 20),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
-              child: Text('Audio',
-                  style: TextStyle(
-                      color: Colors.white70,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.5)),
-            ),
-            if (_tracksLoaded && _tracks.audio.isEmpty)
+              if (_tracksLoaded && _tracks.subtitles.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+                  child: Text('No external subtitles found',
+                      style: TextStyle(color: Colors.white38, fontSize: 13)),
+                ),
+              ..._tracks.subtitles.map((s) => ListTile(
+                    leading: const Icon(Icons.subtitles, color: Colors.white70),
+                    title: Text(s.name, style: const TextStyle(color: Colors.white)),
+                    subtitle: s.language.isNotEmpty
+                        ? Text(s.language, style: const TextStyle(color: Colors.white38))
+                        : null,
+                    trailing: _activeSubtitle == s.index
+                        ? const Icon(Icons.check, color: Color(0xFFE50914))
+                        : null,
+                    onTap: () {
+                      final url = _api.subtitleUrl(widget.item.mediaKind, widget.item.mediaId, s.index);
+                      _selectSubtitle(s.index, url);
+                      Navigator.of(sheetCtx).pop();
+                    },
+                  )),
               const Padding(
-                padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
-                child: Text('Single audio track',
-                    style: TextStyle(color: Colors.white38, fontSize: 13)),
+                padding: EdgeInsets.fromLTRB(20, 8, 20, 0),
+                child: Text('Subtitle delay',
+                    style: TextStyle(
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5)),
               ),
-            ..._tracks.audio.map((a) => ListTile(
-                  leading: const Icon(Icons.volume_up, color: Colors.white70),
-                  title: Text(a.label,
-                      style: const TextStyle(color: Colors.white)),
-                  subtitle: Text(a.language,
-                      style: const TextStyle(color: Colors.white38)),
-                  trailing: _activeAudio == a.index
-                      ? const Icon(Icons.check, color: Color(0xFFE50914))
-                      : null,
-                  onTap: () async {
-                    _controller.setAudioTrack(a.index);
-                    setState(() => _activeAudio = a.index);
-                    Navigator.of(sheetCtx).pop();
-                  },
-                )),
-            const SizedBox(height: 8),
-          ],
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.slow_motion_video, color: Colors.white54, size: 20),
+                    Expanded(
+                      child: Slider(
+                        min: -10,
+                        max: 10,
+                        divisions: 400,
+                        value: _subDelaySec.clamp(-10.0, 10.0),
+                        activeColor: const Color(0xFFE50914),
+                        onChanged: (v) {
+                          setState(() => _subDelaySec = v);
+                        },
+                      ),
+                    ),
+                    SizedBox(
+                      width: 54,
+                      child: Text(
+                        '${_subDelaySec >= 0 ? '+' : ''}${_subDelaySec.toStringAsFixed(1)}s',
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        textAlign: TextAlign.right,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(color: Colors.white12, height: 24, indent: 20, endIndent: 20),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 8, 20, 4),
+                child: Text('Audio',
+                    style: TextStyle(
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5)),
+              ),
+              if (_tracksLoaded && _tracks.audio.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+                  child: Text('Single audio track',
+                      style: TextStyle(color: Colors.white38, fontSize: 13)),
+                ),
+              ..._tracks.audio.map((a) => ListTile(
+                    leading: const Icon(Icons.volume_up, color: Colors.white70),
+                    title: Text(a.label, style: const TextStyle(color: Colors.white)),
+                    subtitle: Text(a.language, style: const TextStyle(color: Colors.white38)),
+                    trailing: _activeAudio == a.index
+                        ? const Icon(Icons.check, color: Color(0xFFE50914))
+                        : null,
+                    onTap: () {
+                      _controller.setAudioTrack(a.index);
+                      setState(() => _activeAudio = a.index);
+                      Navigator.of(sheetCtx).pop();
+                    },
+                  )),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
@@ -414,6 +500,7 @@ class _WatchScreenState extends State<WatchScreen> {
   }
 
   int get _effectiveSec => _duration.inSeconds;
+  int get _realSec => _offset.inSeconds + _position.inSeconds;
 
   String _fmt(Duration d) {
     final h = d.inHours;
@@ -426,6 +513,7 @@ class _WatchScreenState extends State<WatchScreen> {
   void dispose() {
     _hideTimer?.cancel();
     _progressTimer?.cancel();
+    _jobPollTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -434,18 +522,249 @@ class _WatchScreenState extends State<WatchScreen> {
     super.dispose();
   }
 
-  int get _realSec => _offset.inSeconds + _position.inSeconds;
+  Widget _buildPreparePrompt(PlaybackDecision pf) {
+    final est = pf.estimate;
+    final workerStr = est?.worker == 'gpu' ? 'GPU encode' : 'one CPU core';
+    final timeStr = est != null
+        ? 'About ${est.minutes} min, $workerStr${est.sizeGB != null ? ', ~${est.sizeGB} GB' : ''}'
+        : '';
+    final isAdmin = _api.user?.isAdmin ?? false;
+
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 520),
+        margin: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(28),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E1E),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.white12),
+          boxShadow: const [BoxShadow(color: Colors.black87, blurRadius: 16)],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.auto_fix_high, color: Color(0xFFE50914), size: 48),
+            const SizedBox(height: 16),
+            Text(
+              pf.title.isNotEmpty ? pf.title : widget.item.title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              pf.reason.isNotEmpty ? pf.reason : 'Needs preparation for browser playback.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            if (timeStr.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                timeStr,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white38, fontSize: 13),
+              ),
+            ],
+            const SizedBox(height: 24),
+            if (isAdmin)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFE50914),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    ),
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('Prepare now'),
+                    onPressed: () => _startPrepare(pf, 'now'),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white70,
+                      side: const BorderSide(color: Colors.white24),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    ),
+                    onPressed: () => _startPrepare(pf, 'idle'),
+                    child: const Text('Tonight'),
+                  ),
+                  const SizedBox(width: 12),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                  ),
+                ],
+              )
+            else
+              Column(
+                children: [
+                  const Text(
+                    'Not ready on this device yet. Maro has been asked to prepare it.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white54, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Back'),
+                  ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProgressCard(PlaybackJobBrief job) {
+    final statusText = switch (job.status) {
+      'running' => 'Preparing for web (${job.worker.toUpperCase()})...',
+      'paused_gaming' => 'Paused while you\'re gaming',
+      'paused' => 'Paused',
+      'queued' => 'Queued...',
+      'done' => 'Ready to play!',
+      'failed' => 'Failed: ${job.error}',
+      _ => job.status,
+    };
+
+    final isGaming = job.status == 'paused_gaming';
+    final isAdmin = _api.user?.isAdmin ?? false;
+
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 520),
+        margin: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(28),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E1E),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: isGaming ? Colors.amber.withAlpha(100) : Colors.white12),
+          boxShadow: const [BoxShadow(color: Colors.black87, blurRadius: 16)],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  isGaming ? Icons.sports_esports : Icons.hourglass_top,
+                  color: isGaming ? Colors.amber : const Color(0xFFE50914),
+                  size: 28,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    job.title.isNotEmpty ? job.title : widget.item.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isGaming ? Colors.amber.withAlpha(50) : const Color(0xFFE50914).withAlpha(50),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    '${job.percent.toStringAsFixed(1)}%',
+                    style: TextStyle(
+                      color: isGaming ? Colors.amber : const Color(0xFFE50914),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: (job.percent / 100).clamp(0.0, 1.0),
+                minHeight: 8,
+                backgroundColor: Colors.white12,
+                color: isGaming ? Colors.amber : const Color(0xFFE50914),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    statusText,
+                    style: TextStyle(
+                      color: isGaming ? Colors.amber : Colors.white70,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+                Text(
+                  [
+                    if (job.speed > 0) '${job.speed.toStringAsFixed(1)}x',
+                    if (job.etaSec > 0) '${(job.etaSec / 60).ceil()}m left',
+                  ].join(' · '),
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            if (isAdmin)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (job.isRunning)
+                    OutlinedButton(
+                      style: OutlinedButton.styleFrom(foregroundColor: Colors.white70),
+                      onPressed: () => _api.pauseJob(job.id),
+                      child: const Text('Pause'),
+                    )
+                  else if (job.isPaused)
+                    OutlinedButton(
+                      style: OutlinedButton.styleFrom(foregroundColor: Colors.white70),
+                      onPressed: () => _api.resumeJob(job.id),
+                      child: const Text('Resume'),
+                    ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () async {
+                      await _api.cancelJob(job.id);
+                      if (mounted) Navigator.of(context).pop();
+                    },
+                    child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                  ),
+                  const Spacer(),
+                  ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Close'),
+                  ),
+                ],
+              )
+            else
+              Align(
+                alignment: Alignment.centerRight,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Back'),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final progress =
-        _effectiveSec > 0 ? (_realSec / _effectiveSec).clamp(0.0, 1.0) : 0.0;
     return Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
         onTap: _toggleControls,
         child: Stack(
           children: [
+            // Video Surface
             Positioned.fill(
               child: Center(
                 child: AspectRatio(
@@ -454,10 +773,31 @@ class _WatchScreenState extends State<WatchScreen> {
                 ),
               ),
             ),
-            if (_buffering && _position == Duration.zero)
-              const Center(
-                  child: CircularProgressIndicator(color: Colors.white)),
-            if (_formatError != null)
+
+            // Subtitle Overlay (universal for Web, Linux, Android)
+            Positioned.fill(
+              child: SubtitleOverlay(
+                cues: _subtitleCues,
+                position: Duration(seconds: _realSec),
+                delay: Duration(milliseconds: (_subDelaySec * 1000).round()),
+                fontSize: 22,
+              ),
+            ),
+
+            // Buffering Indicator
+            if (_buffering && _position == Duration.zero && _pendingDecision == null && _activeJob == null && _formatError == null)
+              const Center(child: CircularProgressIndicator(color: Colors.white)),
+
+            // Prepare Prompt Dialog
+            if (_pendingDecision != null)
+              Positioned.fill(child: Container(color: Colors.black87, child: _buildPreparePrompt(_pendingDecision!))),
+
+            // Real-time Progress Card
+            if (_activeJob != null && !_activeJob!.isFinished)
+              Positioned.fill(child: Container(color: Colors.black87, child: _buildProgressCard(_activeJob!))),
+
+            // Error Screen
+            if (_formatError != null && _pendingDecision == null && _activeJob == null)
               Positioned.fill(
                 child: Container(
                   color: Colors.black,
@@ -466,18 +806,13 @@ class _WatchScreenState extends State<WatchScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.highlight_off,
-                            color: Color(0xFFE50914), size: 56),
+                        const Icon(Icons.highlight_off, color: Color(0xFFE50914), size: 56),
                         const SizedBox(height: 16),
-                        const Text('Format not supported',
-                            style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700)),
+                        const Text('Cannot Play',
+                            style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
                         const SizedBox(height: 8),
                         Text(_formatError!,
-                            style: const TextStyle(
-                                color: Colors.white54, fontSize: 14),
+                            style: const TextStyle(color: Colors.white54, fontSize: 14),
                             textAlign: TextAlign.center),
                         const SizedBox(height: 24),
                         ElevatedButton(
@@ -489,7 +824,10 @@ class _WatchScreenState extends State<WatchScreen> {
                   ),
                 ),
               ),
-            if (_controlsVisible) ...[
+
+            // Controls Overlay
+            if (_controlsVisible && _pendingDecision == null && (_activeJob == null || _activeJob!.isFinished) && _formatError == null) ...[
+              // Top Bar
               Positioned(
                 top: 0,
                 left: 0,
@@ -509,89 +847,70 @@ class _WatchScreenState extends State<WatchScreen> {
                           widget.item.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700),
+                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700),
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
+
+              // Bottom Bar
               Positioned(
                 left: 0,
                 right: 0,
                 bottom: 0,
                 child: Container(
                   color: const Color(0xCC000000),
-                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 20),
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Slider(
-                        value: progress,
-                        activeColor: const Color(0xFFE50914),
-                        inactiveColor: Colors.white38,
-                        onChanged: (v) {
-                          setState(() {});
-                        },
-                        onChangeEnd: (v) {
-                          final target = (v * _effectiveSec).round();
-                          _seek(target);
-                        },
+                      // Custom SeekBar with hover peek
+                      SeekBar(
+                        position: Duration(seconds: _realSec),
+                        duration: Duration(seconds: _effectiveSec),
+                        buffered: _buffered,
+                        trickplayUrl: '${_api.baseUrl}/api/${widget.item.mediaKind == 'movie' ? 'movies' : 'episodes'}/${widget.item.mediaId}/trickplay',
+                        token: _api.token,
+                        onSeek: (target) => _seek(target.inSeconds),
                       ),
+                      const SizedBox(height: 6),
                       Row(
                         children: [
                           IconButton(
                             color: Colors.white,
                             icon: const Icon(Icons.replay_10),
-                            onPressed: () {
-                              _seek(_realSec - 10);
-                            },
+                            onPressed: () => _seek(_realSec - 10),
                           ),
                           IconButton(
                             color: Colors.white,
                             iconSize: 40,
-                            icon: Icon(_playing
-                                ? Icons.pause_circle_filled
-                                : Icons.play_circle_fill),
+                            icon: Icon(_playing ? Icons.pause_circle_filled : Icons.play_circle_fill),
                             onPressed: () async {
                               _controller.toggle();
-                              if (_playing) {
-                                _scheduleHide();
-                              }
+                              if (_playing) _scheduleHide();
                             },
                           ),
                           IconButton(
                             color: Colors.white,
                             icon: const Icon(Icons.forward_10),
-                            onPressed: () {
-                              _seek(_realSec + 10);
-                            },
+                            onPressed: () => _seek(_realSec + 10),
                           ),
                           IconButton(
-                            color: _activeSubtitle != null
-                                ? const Color(0xFFE50914)
-                                : Colors.white,
+                            color: _activeSubtitle != null ? const Color(0xFFE50914) : Colors.white,
                             icon: const Icon(Icons.subtitles),
-                            onPressed:
-                                _tracksLoaded && _tracks.subtitles.isNotEmpty
-                                    ? _openTrackSheet
-                                    : null,
+                            onPressed: _tracksLoaded && _tracks.subtitles.isNotEmpty ? _openTrackSheet : null,
                           ),
                           IconButton(
                             color: Colors.white,
                             icon: const Icon(Icons.settings_voice),
-                            onPressed: _tracksLoaded && _tracks.audio.length > 1
-                                ? _openTrackSheet
-                                : null,
+                            onPressed: _tracksLoaded && _tracks.audio.length > 1 ? _openTrackSheet : null,
                           ),
                           const Spacer(),
                           Text(
                             '${_fmt(Duration(seconds: _realSec))} / ${_fmt(Duration(seconds: _effectiveSec))}',
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 13),
+                            style: const TextStyle(color: Colors.white, fontSize: 13),
                           ),
                         ],
                       ),

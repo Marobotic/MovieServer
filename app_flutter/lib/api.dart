@@ -400,4 +400,42 @@ class Api {
     }
     return jsonDecode(text);
   }
+
+  // ---- prepare jobs ----
+
+  Future<PlaybackJobBrief> createJob(String kind, int mediaId, String type,
+      {String mode = 'now'}) async {
+    final r = await _request('POST', '/api/jobs', body: {
+      'kind': kind,
+      'media_id': mediaId,
+      'type': type,
+      'mode': mode,
+    });
+    return PlaybackJobBrief.fromJson(r);
+  }
+
+  Future<List<PlaybackJobBrief>> listJobs() async {
+    final r = await _request('GET', '/api/jobs');
+    return (r as List).map((e) => PlaybackJobBrief.fromJson(e)).toList();
+  }
+
+  Future<PlaybackJobBrief> pauseJob(int id) async {
+    final r = await _request('POST', '/api/jobs/$id/pause');
+    return PlaybackJobBrief.fromJson(r);
+  }
+
+  Future<PlaybackJobBrief> resumeJob(int id) async {
+    final r = await _request('POST', '/api/jobs/$id/resume');
+    return PlaybackJobBrief.fromJson(r);
+  }
+
+  Future<PlaybackJobBrief> cancelJob(int id) async {
+    final r = await _request('POST', '/api/jobs/$id/cancel');
+    return PlaybackJobBrief.fromJson(r);
+  }
+
+  Future<void> deleteWebcopy(String kind, int id) async {
+    await _request('DELETE', '/api/webcopies/${_pluralKind(kind)}/$id');
+  }
 }
+

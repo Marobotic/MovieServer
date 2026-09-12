@@ -382,25 +382,54 @@ class PlaybackEstimate {
 
 class PlaybackJobBrief {
   final int id;
+  final String kind;
+  final int mediaId;
+  final String type;
+  final String mode;
   final String status;
+  final String worker;
   final double percent;
   final double speed;
   final int etaSec;
+  final String title;
+  final String error;
 
   PlaybackJobBrief({
     required this.id,
+    this.kind = 'movie',
+    this.mediaId = 0,
+    this.type = 'quick_fix',
+    this.mode = 'now',
     required this.status,
+    this.worker = 'cpu',
     required this.percent,
     required this.speed,
     required this.etaSec,
+    this.title = '',
+    this.error = '',
   });
+
+  bool get isRunning => status == 'running';
+  bool get isPaused => status == 'paused' || status == 'paused_gaming';
+  bool get isQueued => status == 'queued';
+  bool get isDone => status == 'done';
+  bool get isFailed => status == 'failed';
+  bool get isCanceled => status == 'canceled';
+  bool get isFinished => isDone || isFailed || isCanceled;
 
   factory PlaybackJobBrief.fromJson(Map<String, dynamic> j) => PlaybackJobBrief(
         id: j['id'] as int? ?? 0,
+        kind: j['kind'] as String? ?? 'movie',
+        mediaId: j['media_id'] as int? ?? 0,
+        type: j['type'] as String? ?? 'quick_fix',
+        mode: j['mode'] as String? ?? 'now',
         status: j['status'] as String? ?? 'queued',
+        worker: j['worker'] as String? ?? 'cpu',
         percent: (j['percent'] as num?)?.toDouble() ?? 0,
         speed: (j['speed'] as num?)?.toDouble() ?? 0,
         etaSec: j['eta_sec'] as int? ?? 0,
+        title: j['title'] as String? ?? '',
+        error: j['error'] as String? ?? '',
       );
 }
 
