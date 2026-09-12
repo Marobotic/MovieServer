@@ -277,6 +277,7 @@ func (s *Server) upsertMovie(m *Movie, metadataOnly bool) {
 		upd.WriteString("trailer_url=?, tmdb_id=?, year=? WHERE id=?")
 		args = append(args, m.TrailerURL, m.TMDbID, year, existing.ID)
 		s.db.Exec(upd.String(), args...)
+		s.clearFulfilledRequests("movie", m.TMDbID, m.Title, year)
 		return
 	}
 	if existing != nil {
@@ -313,6 +314,7 @@ func (s *Server) upsertMovie(m *Movie, metadataOnly bool) {
 	}
 	m.ID, _ = res.LastInsertId()
 	s.checkMedia("movie", m.ID)
+	s.clearFulfilledRequests("movie", m.TMDbID, m.Title, year)
 }
 
 func boolInt(b bool) int {
@@ -452,6 +454,7 @@ func (s *Server) upsertShow(sh *Show) (*Show, error) {
 	if err == nil {
 		sh.ID = id
 		_, e := s.db.Exec(`UPDATE shows SET year=? WHERE id=?`, sh.Year, id)
+		s.clearFulfilledRequests("show", 0, sh.Title, sh.Year)
 		return sh, e
 	}
 	res, e := s.db.Exec(`INSERT INTO shows (title, year) VALUES (?,?)`, sh.Title, sh.Year)
@@ -459,6 +462,7 @@ func (s *Server) upsertShow(sh *Show) (*Show, error) {
 		return nil, e
 	}
 	sh.ID, _ = res.LastInsertId()
+	s.clearFulfilledRequests("show", 0, sh.Title, sh.Year)
 	return sh, nil
 }
 
@@ -477,20 +481,25 @@ func (s *Server) upsertEpisode(show *Show, season int, fileName, fullPath string
 
 	var id int64
 	var oldSize int64
-	err := s.db.QueryRow(`SELECT id, size_bytes FROM episodes WHERE file_path = ?`, rel).Scan(&id, &oldSize)
+	var oldFileTitle string
+	err := s.db.QueryRow(`SELECT id, size_bytes, file_title FROM episodes WHERE file_path = ?`, rel).Scan(&id, &oldSize, &oldFileTitle)
 	dur, broken := s.probeMovie(fullPath)
 	if err == nil {
 		if oldSize == size {
-			s.db.Exec(`UPDATE episodes SET title=?, duration_sec=?, broken=? WHERE id=? AND title != ?`, title, dur, boolInt(broken), id, title)
+			s.db.Exec(`UPDATE episodes SET file_title=?, duration_sec=?, broken=? WHERE id=?`, title, dur, boolInt(broken), id)
+			// Never clobber a TMDB-matched title on a plain rescan; only a
+			// file-derived title (or blanks) get refreshed.
+			s.db.Exec(`UPDATE episodes SET title=? WHERE id=? AND (title = '' OR title = ?)`, title, id, oldFileTitle)
 			s.checkMedia("episode", id)
 			return false
 		}
-		s.db.Exec(`UPDATE episodes SET size_bytes=?, title=?, duration_sec=?, broken=? WHERE id=?`, size, title, dur, boolInt(broken), id)
+		s.db.Exec(`UPDATE episodes SET size_bytes=?, file_title=?, duration_sec=?, broken=? WHERE id=?`, size, title, dur, boolInt(broken), id)
+		s.db.Exec(`UPDATE episodes SET title=? WHERE id=? AND (title = '' OR title = ?)`, title, id, oldFileTitle)
 		s.checkMedia("episode", id)
 		return true
 	}
-	res, e := s.db.Exec(`INSERT INTO episodes (show_id, season, episode, title, file_path, size_bytes, duration_sec, broken)
-		VALUES (?,?,?,?,?,?,?,?)`, show.ID, season, eNum, title, rel, size, dur, boolInt(broken))
+	res, e := s.db.Exec(`INSERT INTO episodes (show_id, season, episode, title, file_title, file_path, size_bytes, duration_sec, broken)
+		VALUES (?,?,?,?,?,?,?,?,?)`, show.ID, season, eNum, title, title, rel, size, dur, boolInt(broken))
 	if e != nil {
 		fmt.Println("insert episode:", e)
 		return false

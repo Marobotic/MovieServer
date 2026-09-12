@@ -259,6 +259,10 @@ func runMigrations(db *sql.DB) error {
 		`ALTER TABLE users ADD COLUMN audio_lang TEXT NOT NULL DEFAULT 'eng'`,
 		`ALTER TABLE movies ADD COLUMN broken INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE episodes ADD COLUMN broken INTEGER NOT NULL DEFAULT 0`,
+		// Backfill: before file_title existed, title held the file-derived name.
+		// Once split, title may hold a TMDB name while file_title keeps the
+		// on-disk one; enrichEpisodes upgrades rows where title == file_title.
+		`UPDATE episodes SET file_title = title WHERE file_title = '' AND title != ''`,
 	}
 	for i := ver; i < len(steps); i++ {
 		if _, err := db.Exec(steps[i]); err != nil {

@@ -82,6 +82,7 @@ type tmdbSearchResp struct {
 		ReleaseDate   string `json:"release_date"`
 		FirstAirDate  string `json:"first_air_date"`
 		PosterPath    string `json:"poster_path"`
+		BackdropPath  string `json:"backdrop_path"`
 		Overview      string `json:"overview"`
 		MediaType     string `json:"media_type"`
 	} `json:"results"`
@@ -102,6 +103,23 @@ type tmdbMovieDetail struct {
 			Type string `json:"type"`
 		} `json:"results"`
 	} `json:"videos"`
+}
+
+type tmdbCatalogResult struct {
+	ID           int    `json:"id"`
+	Title        string `json:"title"`
+	Name         string `json:"name"`
+	ReleaseDate  string `json:"release_date"`
+	FirstAirDate string `json:"first_air_date"`
+	PosterPath   string `json:"poster_path"`
+	BackdropPath string `json:"backdrop_path"`
+	Overview     string `json:"overview"`
+}
+
+type tmdbCatalogResp struct {
+	Page       int                 `json:"page"`
+	TotalPages int                 `json:"total_pages"`
+	Results    []tmdbCatalogResult `json:"results"`
 }
 
 type tmdbTVDetail struct {
@@ -194,6 +212,37 @@ func (c *tmdbClient) searchTV(query string, year int) ([]tmdbTVSearch, error) {
 		out = append(out, tmdbTVSearch{ID: r.ID, Name: r.Name, FirstAirDate: r.FirstAirDate, PosterPath: r.PosterPath, Overview: r.Overview})
 	}
 	return out, err
+}
+
+func (c *tmdbClient) catalog(kind, category, query string, page int) (*tmdbCatalogResp, error) {
+	if page < 1 {
+		page = 1
+	}
+	if page > 500 {
+		page = 500
+	}
+	base := "movie"
+	if kind == "show" {
+		base = "tv"
+	}
+	path := ""
+	if strings.TrimSpace(query) != "" {
+		path = "/search/" + base + "?query=" + url.QueryEscape(query) + "&include_adult=false&page=" + strconv.Itoa(page)
+	} else {
+		allowed := map[string]bool{"popular": true, "top_rated": true, "now_playing": true, "upcoming": true, "airing_today": true, "on_the_air": true}
+		if !allowed[category] {
+			category = "popular"
+		}
+		if (base == "movie" && (category == "airing_today" || category == "on_the_air")) || (base == "tv" && (category == "now_playing" || category == "upcoming")) {
+			category = "popular"
+		}
+		path = "/" + base + "/" + category + "?page=" + strconv.Itoa(page)
+	}
+	resp := &tmdbCatalogResp{}
+	if err := c.get(path, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func (c *tmdbClient) tv(id int) (*tmdbTVDetail, error) {
@@ -332,22 +381,23 @@ func (s *Server) enrichEpisodes(c *tmdbClient, showID, tmdbID int64) {
 	if tmdbID == 0 {
 		return
 	}
-	// Episodes are enriched as often as they lack a still or overview, not
-	// just when the show itself was missing metadata.
-	rows, err := s.db.Query(`SELECT id, season, episode, title, overview, still FROM episodes WHERE show_id = ? AND (title = '' OR overview = '' OR still = '')`, showID)
+	// Episodes are enriched as often as they lack a still or overview, or
+	// still carry a file-derived title (title == file_title), not just when
+	// the show itself was missing metadata.
+	rows, err := s.db.Query(`SELECT id, season, episode, title, file_title, overview, still FROM episodes WHERE show_id = ? AND (title = '' OR title = file_title OR overview = '' OR still = '')`, showID)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 	type ep struct {
-		id                     int64
-		s, e                   int
-		title, overview, still string
+		id                                int64
+		s, e                              int
+		title, fileTitle, overview, still string
 	}
 	var eps []ep
 	for rows.Next() {
 		var e ep
-		rows.Scan(&e.id, &e.s, &e.e, &e.title, &e.overview, &e.still)
+		rows.Scan(&e.id, &e.s, &e.e, &e.title, &e.fileTitle, &e.overview, &e.still)
 		eps = append(eps, e)
 	}
 	if len(eps) == 0 {
@@ -374,7 +424,7 @@ func (s *Server) enrichEpisodes(c *tmdbClient, showID, tmdbID int64) {
 			}
 			q := "UPDATE episodes SET "
 			var args []any
-			if e.title == "" && d.Name != "" {
+			if d.Name != "" && (e.title == "" || e.title == e.fileTitle) {
 				q += "title=?, "
 				args = append(args, d.Name)
 			}
@@ -411,6 +461,7 @@ func (s *Server) applyShowMetadata(sh *Show) {
 	}
 	args = append(args, sh.ID)
 	s.db.Exec(`UPDATE shows SET `+strings.Join(sets, ", ")+` WHERE id=?`, args...)
+	s.clearFulfilledRequests("show", sh.TMDbID, sh.Title, sh.Year)
 }
 
 func derpYear(date string) int {
