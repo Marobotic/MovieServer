@@ -179,8 +179,66 @@ type subFile struct {
 	Name string
 }
 
-// findSubtitles scans an item folder for external subtitle files.
-func findSubtitles(dir, videoStem string) []subFile {
+// seriesKey identifies an episode by season/episode so its own subtitles can
+// be isolated from the rest of the season folder.
+type seriesKey struct{ season, episode int }
+
+// seasonEpFrom extracts SxxEyy-style markers from a name. Either value is -1
+// when that marker is absent.
+func seasonEpFrom(name string) (int, int) {
+	if m := episodeNameRe.FindStringSubmatch(name); m != nil {
+		s, _ := strconv.Atoi(m[1])
+		e, _ := strconv.Atoi(m[2])
+		return s, e
+	}
+	if m := episodeXRe.FindStringSubmatch(name); m != nil {
+		s, _ := strconv.Atoi(m[1])
+		e, _ := strconv.Atoi(m[2])
+		return s, e
+	}
+	if m := episodeWordRe.FindStringSubmatch(name); m != nil {
+		e, _ := strconv.Atoi(m[1])
+		return -1, e
+	}
+	if m := seasonFolderRe.FindStringSubmatch(name); m != nil {
+		s, _ := strconv.Atoi(m[1])
+		return s, -1
+	}
+	return -1, -1
+}
+
+// seasonStemOf removes the first SxxEyy marker and trailing separators so the
+// result is a season-level stem ("Show.S01E02" -> "Show").
+func seasonStemOf(stem string) string {
+	loc := episodeNameRe.FindStringIndex(stem)
+	if loc == nil {
+		return ""
+	}
+	return strings.TrimRight(stem[:loc[0]], ".-_ ")
+}
+
+// ownsEpisodeSubtitle decides whether a subtitle stem belongs to the given
+// episode. Marker files must match season and episode exactly; season-wide
+// and generic fallback files (no markers) still apply.
+func ownsEpisodeSubtitle(stem string, owner seriesKey) bool {
+	s, e := seasonEpFrom(stem)
+	if s < 0 && e < 0 {
+		return true
+	}
+	if s >= 0 && s != owner.season {
+		return false
+	}
+	if e >= 0 && e != owner.episode {
+		return false
+	}
+	return true
+}
+
+// findSubtitles scans an item folder for external subtitle files. Without an
+// owner every subtitle is returned; with a seriesKey owner, episodic
+// subtitles are isolated to the matching season/episode so one episode does
+// not list the whole season's files.
+func findSubtitles(dir, videoStem string, owner *seriesKey) []subFile {
 	videoStem = strings.ToLower(videoStem)
 	var files []string
 	entries, _ := os.ReadDir(dir)
@@ -201,15 +259,27 @@ func findSubtitles(dir, videoStem string) []subFile {
 			}
 		}
 	}
-	out := make([]subFile, 0)
+	seasonStem := seasonStemOf(videoStem)
+	out := make([]subFile, 0, len(files))
 	for _, f := range files {
 		stem := strings.ToLower(strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)))
+		if owner != nil && !ownsEpisodeSubtitle(stem, *owner) {
+			continue
+		}
 		code := ""
-		if strings.HasPrefix(stem, videoStem) {
+		switch {
+		case strings.HasPrefix(stem, videoStem):
 			code = strings.TrimSpace(strings.TrimPrefix(stem, videoStem))
-			code = strings.TrimLeft(code, ".-_ ")
-		} else if n := strings.Index(stem, "."+videoStem); n > 0 {
-			code = stem[:n]
+		case seasonStem != "" && strings.HasPrefix(stem, seasonStem):
+			code = strings.TrimSpace(strings.TrimPrefix(stem, seasonStem))
+		default:
+			if n := strings.Index(stem, "."+videoStem); n > 0 {
+				code = stem[:n]
+			}
+		}
+		code = strings.TrimLeft(code, ".-_ ")
+		if m := seasonFolderRe.FindStringSubmatch(code); m != nil && m[0] != "" {
+			code = strings.TrimLeft(strings.TrimSpace(code[len(m[0]):]), ".-_ ")
 		}
 		name := code
 		langName := ""
@@ -235,6 +305,19 @@ type subtitleTrack struct {
 	Name     string `json:"name"`
 }
 
+// subtitleOwner returns the season/episode key that isolates a show's
+// subtitles, or nil for movies (no isolation).
+func (s *Server) subtitleOwner(kind string, id int64) *seriesKey {
+	if kind != "episode" {
+		return nil
+	}
+	var se, ep int
+	if err := s.db.QueryRow(`SELECT season, episode FROM episodes WHERE id = ?`, id).Scan(&se, &ep); err != nil {
+		return nil
+	}
+	return &seriesKey{season: se, episode: ep}
+}
+
 func (s *Server) subtitleTracks(kind string, id int64) ([]subtitleTrack, error) {
 	dir, err := s.mediaDirFor(kind, id)
 	if err != nil {
@@ -245,7 +328,7 @@ func (s *Server) subtitleTracks(kind string, id int64) ([]subtitleTrack, error) 
 		return nil, err
 	}
 	stem := strings.TrimSuffix(filepath.Base(full), filepath.Ext(full))
-	subs := findSubtitles(dir, stem)
+	subs := findSubtitles(dir, stem, s.subtitleOwner(kind, id))
 	route := "movies"
 	if kind == "episode" {
 		route = "episodes"
@@ -285,7 +368,7 @@ func (s *Server) handleSubtitle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stem := strings.TrimSuffix(filepath.Base(full), filepath.Ext(full))
-	subs := findSubtitles(dir, stem)
+	subs := findSubtitles(dir, stem, s.subtitleOwner(kind, id))
 	if idx < 0 || idx >= len(subs) {
 		writeError(w, 404, "subtitle not found")
 		return
