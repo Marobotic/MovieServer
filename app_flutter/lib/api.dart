@@ -331,17 +331,20 @@ class Api {
     return PlaybackDecision.fromJson(r);
   }
 
-  /// Server-wide settings (subtitle delay etc.).
-  Future<AppSettings> getSettings() async {
-    final r = await _request('GET', '/api/settings');
-    return AppSettings.fromJson(r);
+  /// Per-media subtitle delay. Every user reads the same value for an item;
+  /// only admins persist it.
+  Future<Duration> getSubtitleDelay(String mediaKind, int id) async {
+    final r = await _request(
+        'GET', '/api/${_pluralKind(mediaKind)}/$id/subtitle-delay');
+    return Duration(
+        milliseconds: (r['subtitle_delay_ms'] as num?)?.toInt() ?? 0);
   }
 
-  /// Admin only: persists the global subtitle delay in milliseconds.
-  Future<AppSettings> updateSubtitleDelay(Duration delay) async {
-    final r = await _request('PUT', '/api/admin/settings',
+  /// Admin only: persists the subtitle delay in milliseconds for one item.
+  Future<void> updateSubtitleDelay(
+      String mediaKind, int id, Duration delay) async {
+    await _request('PUT', '/api/admin/${_pluralKind(mediaKind)}/$id/subtitle-delay',
         body: {'subtitle_delay_ms': delay.inMilliseconds});
-    return AppSettings.fromJson(r);
   }
 
   // ---- requests ----

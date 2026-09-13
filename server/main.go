@@ -210,9 +210,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /api/users/{id}", s.requireAdmin(s.handleUpdateUser))
 	mux.HandleFunc("DELETE /api/users/{id}", s.requireAdmin(s.handleDeleteUser))
 
-	// global settings (admin-writable, everyone reads)
-	mux.HandleFunc("GET /api/settings", s.authMiddleware(s.handleGetSettings))
-	mux.HandleFunc("PUT /api/admin/settings", s.requireAdmin(s.handleUpdateSettings))
+	// subtitle delay per media item (admin-writable, everyone reads)
+	mux.HandleFunc("GET /api/movies/{id}/subtitle-delay", s.authMiddleware(s.handleGetSubtitleDelay))
+	mux.HandleFunc("GET /api/episodes/{id}/subtitle-delay", s.authMiddleware(s.handleGetSubtitleDelay))
+	mux.HandleFunc("PUT /api/admin/movies/{id}/subtitle-delay", s.requireAdmin(s.handleUpdateSubtitleDelay))
+	mux.HandleFunc("PUT /api/admin/episodes/{id}/subtitle-delay", s.requireAdmin(s.handleUpdateSubtitleDelay))
 
 	// admin operations
 	mux.HandleFunc("POST /api/admin/scan", s.requireAdmin(s.handleScan))

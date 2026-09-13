@@ -97,21 +97,22 @@ class _WatchScreenState extends State<WatchScreen> {
     _webKeyUninstall = installWebKeyHandler(_onWebKeyCode);
     _open();
     _settingsTimer = Timer.periodic(const Duration(seconds: 8), (_) async {
-      await _loadGlobalDelay();
+      await _loadSubtitleDelay();
     });
   }
 
-  /// Fetches the server-wide subtitle delay and applies it to the player.
-  /// Non-admins have no local control; they always inherit this value.
-  /// Skipped while the delay editor is open, and ignores stale reads while a
-  /// local commit is still in flight, so the poll never overwrites an edit
-  /// before its PUT lands.
-  Future<void> _loadGlobalDelay() async {
+  /// Fetches the subtitle delay for the current movie/episode and applies it
+  /// to the player. Non-admins have no local control; they always inherit this
+  /// value. Skipped while the delay editor is open, and ignores stale reads
+  /// while a local commit is still in flight, so the poll never overwrites an
+  /// edit before its PUT lands.
+  Future<void> _loadSubtitleDelay() async {
     if (_delaySheetOpen) return;
     try {
-      final s = await _api.getSettings();
+      final ms = (await _api.getSubtitleDelay(
+              widget.item.mediaKind, widget.item.mediaId))
+          .inMilliseconds;
       if (!mounted || _delaySheetOpen) return;
-      final ms = s.subtitleDelay.inMilliseconds;
       if (_pendingDelayMs != null && ms == _pendingDelayMs) {
         // Our own commit became visible; nothing to do.
         _pendingDelayMs = null;
@@ -168,8 +169,9 @@ class _WatchScreenState extends State<WatchScreen> {
         widget.item.mediaKind == 'movie' || widget.item.mediaKind == 'episode';
 
     try {
-      final s = await api.getSettings();
-      final ms = s.subtitleDelay.inMilliseconds;
+      final ms = (await api.getSubtitleDelay(
+              widget.item.mediaKind, widget.item.mediaId))
+          .inMilliseconds;
       if (mounted && ms != (_subDelaySec * 1000).round()) {
         setState(() => _subDelaySec = ms / 1000);
       }
@@ -279,7 +281,7 @@ class _WatchScreenState extends State<WatchScreen> {
     }
 
     await _controller.play();
-    await _applyGlobalDelay(_subDelaySec);
+    await _applySubtitleDelay(_subDelaySec);
     _startProgressTimer();
   }
 
@@ -576,7 +578,7 @@ class _WatchScreenState extends State<WatchScreen> {
       // Flush any edit the user made but didn't submit before closing.
       if (_delayCommitTimer?.isActive ?? false) {
         _delayCommitTimer?.cancel();
-        _commitGlobalDelay();
+        _commitSubtitleDelay();
       }
     });
   }
@@ -589,7 +591,7 @@ class _WatchScreenState extends State<WatchScreen> {
         children: [
           const Padding(
             padding: EdgeInsets.only(left: 8, bottom: 2),
-            child: Text('Subtitle delay (global)',
+            child: Text('Subtitle delay',
                 style: TextStyle(
                     color: Colors.white70,
                     fontWeight: FontWeight.w700,
@@ -612,9 +614,9 @@ class _WatchScreenState extends State<WatchScreen> {
                     _subDelayCtl.text = v.toStringAsFixed(1);
                     setSheetState(() {});
                     setState(() {});
-                    _applyGlobalDelay(_subDelaySec);
+                    _applySubtitleDelay(_subDelaySec);
                   },
-                  onChangeEnd: (_) => _commitGlobalDelay(),
+                  onChangeEnd: (_) => _commitSubtitleDelay(),
                 ),
               ),
               SizedBox(
@@ -636,7 +638,7 @@ class _WatchScreenState extends State<WatchScreen> {
                     _subDelaySec = v;
                     setSheetState(() {});
                     setState(() {});
-                    _applyGlobalDelay(v);
+                    _applySubtitleDelay(v);
                     _debounceCommit();
                   },
                   onSubmitted: (txt) {
@@ -645,8 +647,8 @@ class _WatchScreenState extends State<WatchScreen> {
                     _subDelaySec = v;
                     setSheetState(() {});
                     setState(() {});
-                    _applyGlobalDelay(v);
-                    _commitGlobalDelay();
+                    _applySubtitleDelay(v);
+                    _commitSubtitleDelay();
                   },
                 ),
               ),
@@ -659,18 +661,19 @@ class _WatchScreenState extends State<WatchScreen> {
 
   /// Applies the delay to the local player (mpv sub-delay on native, overlay
   /// position shift on web) without touching the server yet.
-  Future<void> _applyGlobalDelay(double sec) async {
+  Future<void> _applySubtitleDelay(double sec) async {
     if (kIsWeb) return;
     await _controller.setSubtitleDelay(
         Duration(milliseconds: (sec * 1000).round()));
   }
 
-  Future<void> _commitGlobalDelay() async {
+  Future<void> _commitSubtitleDelay() async {
     _delayCommitTimer?.cancel();
     final ms = (_subDelaySec * 1000).round();
     _pendingDelayMs = ms;
     try {
-      await _api.updateSubtitleDelay(Duration(milliseconds: ms));
+      await _api.updateSubtitleDelay(widget.item.mediaKind,
+          widget.item.mediaId, Duration(milliseconds: ms));
     } catch (_) {}
     _pendingDelayMs = null;
   }
@@ -681,7 +684,7 @@ class _WatchScreenState extends State<WatchScreen> {
   void _debounceCommit() {
     _delayCommitTimer?.cancel();
     _delayCommitTimer = Timer(const Duration(milliseconds: 500), () {
-      _commitGlobalDelay();
+      _commitSubtitleDelay();
     });
   }
 

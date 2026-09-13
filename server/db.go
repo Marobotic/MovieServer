@@ -235,9 +235,11 @@ CREATE TABLE IF NOT EXISTS prepare_jobs (
 	finished_at DATETIME
 );
 
-CREATE TABLE IF NOT EXISTS settings (
-	key   TEXT PRIMARY KEY,
-	value TEXT NOT NULL DEFAULT ''
+CREATE TABLE IF NOT EXISTS subtitle_delays (
+	kind             TEXT NOT NULL,
+	media_id         INTEGER NOT NULL,
+	subtitle_delay_ms INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (kind, media_id)
 );
 `
 	_, err := db.Exec(schema)
