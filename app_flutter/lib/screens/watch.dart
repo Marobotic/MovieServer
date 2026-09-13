@@ -61,6 +61,7 @@ class _WatchScreenState extends State<WatchScreen> {
   Timer? _progressTimer;
   Timer? _jobPollTimer;
   Timer? _settingsTimer;
+  Timer? _delayCommitTimer;
   final List<StreamSubscription> _subs = [];
   Duration _disposePos = Duration.zero;
   MediaTracks _tracks = const MediaTracks.empty();
@@ -68,6 +69,7 @@ class _WatchScreenState extends State<WatchScreen> {
   int? _activeSubtitle;
   int? _activeAudio;
   double _subDelaySec = 0;
+  int? _pendingDelayMs;
   String? _formatError;
 
   PlaybackDecision? _pendingDecision;
@@ -83,6 +85,7 @@ class _WatchScreenState extends State<WatchScreen> {
   bool _nextChecked = false;
   void Function()? _webKeyUninstall;
   final TextEditingController _subDelayCtl = TextEditingController();
+  bool _delaySheetOpen = false;
 
   @override
   void initState() {
@@ -100,11 +103,21 @@ class _WatchScreenState extends State<WatchScreen> {
 
   /// Fetches the server-wide subtitle delay and applies it to the player.
   /// Non-admins have no local control; they always inherit this value.
+  /// Skipped while the delay editor is open, and ignores stale reads while a
+  /// local commit is still in flight, so the poll never overwrites an edit
+  /// before its PUT lands.
   Future<void> _loadGlobalDelay() async {
+    if (_delaySheetOpen) return;
     try {
       final s = await _api.getSettings();
-      if (!mounted) return;
+      if (!mounted || _delaySheetOpen) return;
       final ms = s.subtitleDelay.inMilliseconds;
+      if (_pendingDelayMs != null && ms == _pendingDelayMs) {
+        // Our own commit became visible; nothing to do.
+        _pendingDelayMs = null;
+        return;
+      }
+      if (_pendingDelayMs != null) return; // stale read, commit in flight
       if (ms != (_subDelaySec * 1000).round()) {
         if (kIsWeb) {
           setState(() => _subDelaySec = ms / 1000);
@@ -437,6 +450,8 @@ class _WatchScreenState extends State<WatchScreen> {
 
   void _openTrackSheet() {
     _scheduleHide();
+    _delaySheetOpen = true;
+    _subDelayCtl.text = _subDelaySec.toStringAsFixed(1);
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF1F1F1F),
@@ -556,11 +571,17 @@ class _WatchScreenState extends State<WatchScreen> {
           ),
         ),
       ),
-    );
+    ).whenComplete(() {
+      _delaySheetOpen = false;
+      // Flush any edit the user made but didn't submit before closing.
+      if (_delayCommitTimer?.isActive ?? false) {
+        _delayCommitTimer?.cancel();
+        _commitGlobalDelay();
+      }
+    });
   }
 
   Widget _buildAdminDelayControl(void Function(void Function()) setSheetState) {
-    _subDelayCtl.text = _subDelaySec.toStringAsFixed(1);
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
       child: Column(
@@ -588,6 +609,7 @@ class _WatchScreenState extends State<WatchScreen> {
                   activeColor: const Color(0xFFE50914),
                   onChanged: (v) {
                     _subDelaySec = v;
+                    _subDelayCtl.text = v.toStringAsFixed(1);
                     setSheetState(() {});
                     setState(() {});
                     _applyGlobalDelay(_subDelaySec);
@@ -608,6 +630,15 @@ class _WatchScreenState extends State<WatchScreen> {
                     suffixStyle: TextStyle(color: Colors.white38),
                   ),
                   textAlign: TextAlign.right,
+                  onChanged: (txt) {
+                    final v = double.tryParse(txt);
+                    if (v == null) return;
+                    _subDelaySec = v;
+                    setSheetState(() {});
+                    setState(() {});
+                    _applyGlobalDelay(v);
+                    _debounceCommit();
+                  },
                   onSubmitted: (txt) {
                     final v = double.tryParse(txt);
                     if (v == null) return;
@@ -635,10 +666,23 @@ class _WatchScreenState extends State<WatchScreen> {
   }
 
   Future<void> _commitGlobalDelay() async {
+    _delayCommitTimer?.cancel();
+    final ms = (_subDelaySec * 1000).round();
+    _pendingDelayMs = ms;
     try {
-      await _api.updateSubtitleDelay(
-          Duration(milliseconds: (_subDelaySec * 1000).round()));
+      await _api.updateSubtitleDelay(Duration(milliseconds: ms));
     } catch (_) {}
+    _pendingDelayMs = null;
+  }
+
+  /// Schedules a single PUT to the server shortly after the last edit, so
+  /// typing/slider moves combine into one save and the field isn't committed
+  /// mid-edit to a stale value.
+  void _debounceCommit() {
+    _delayCommitTimer?.cancel();
+    _delayCommitTimer = Timer(const Duration(milliseconds: 500), () {
+      _commitGlobalDelay();
+    });
   }
 
   void _openSubtitleSettings() {
@@ -894,6 +938,7 @@ class _WatchScreenState extends State<WatchScreen> {
     _progressTimer?.cancel();
     _jobPollTimer?.cancel();
     _settingsTimer?.cancel();
+    _delayCommitTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }

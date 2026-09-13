@@ -117,6 +117,12 @@ class Api {
               headers: headers,
               body: body is String ? body : jsonEncode(body ?? {}))
           .timeout(const Duration(seconds: 30));
+    } else if (method == 'PUT') {
+      resp = await http
+          .put(uri,
+              headers: headers,
+              body: body is String ? body : jsonEncode(body ?? {}))
+          .timeout(const Duration(seconds: 30));
     } else {
       resp = await http
           .post(uri,
