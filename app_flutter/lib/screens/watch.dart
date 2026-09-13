@@ -718,6 +718,11 @@ class _WatchScreenState extends State<WatchScreen> {
 
   Future<void> _toggleFullscreen() async {
     FocusScope.of(context).requestFocus(_focusNode);
+    if (kIsWeb) {
+      final active = await toggleBrowserFullscreen();
+      if (mounted) setState(() => _fullscreen = active);
+      return;
+    }
     if (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS) {
       if (!_fullscreen) {
@@ -726,11 +731,6 @@ class _WatchScreenState extends State<WatchScreen> {
         await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       }
       if (mounted) setState(() => _fullscreen = !_fullscreen);
-      return;
-    }
-    if (kIsWeb) {
-      final active = await toggleBrowserFullscreen();
-      if (mounted) setState(() => _fullscreen = active);
       return;
     }
     // Desktop: cover the window with the same player skin.
