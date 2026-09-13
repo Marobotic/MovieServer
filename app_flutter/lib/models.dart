@@ -462,6 +462,18 @@ class PlaybackJobBrief {
       );
 }
 
+/// Server-wide settings shared by all users. Only admins can write them.
+class AppSettings {
+  final Duration subtitleDelay;
+
+  const AppSettings({this.subtitleDelay = Duration.zero});
+
+  factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
+        subtitleDelay:
+            Duration(milliseconds: j['subtitle_delay_ms'] as int? ?? 0),
+      );
+}
+
 class PlaybackDecision {
   final String decision;
   final String title;

@@ -60,6 +60,7 @@ class _WatchScreenState extends State<WatchScreen> {
   Timer? _hideTimer;
   Timer? _progressTimer;
   Timer? _jobPollTimer;
+  Timer? _settingsTimer;
   final List<StreamSubscription> _subs = [];
   Duration _disposePos = Duration.zero;
   MediaTracks _tracks = const MediaTracks.empty();
@@ -81,6 +82,7 @@ class _WatchScreenState extends State<WatchScreen> {
   Episode? _nextEpisode;
   bool _nextChecked = false;
   void Function()? _webKeyUninstall;
+  final TextEditingController _subDelayCtl = TextEditingController();
 
   @override
   void initState() {
@@ -91,6 +93,27 @@ class _WatchScreenState extends State<WatchScreen> {
     _loadSubtitleStyle();
     _webKeyUninstall = installWebKeyHandler(_onWebKeyCode);
     _open();
+    _settingsTimer = Timer.periodic(const Duration(seconds: 8), (_) async {
+      await _loadGlobalDelay();
+    });
+  }
+
+  /// Fetches the server-wide subtitle delay and applies it to the player.
+  /// Non-admins have no local control; they always inherit this value.
+  Future<void> _loadGlobalDelay() async {
+    try {
+      final s = await _api.getSettings();
+      if (!mounted) return;
+      final ms = s.subtitleDelay.inMilliseconds;
+      if (ms != (_subDelaySec * 1000).round()) {
+        if (kIsWeb) {
+          setState(() => _subDelaySec = ms / 1000);
+        } else {
+          await _controller.setSubtitleDelay(Duration(milliseconds: ms));
+          if (mounted) setState(() => _subDelaySec = ms / 1000);
+        }
+      }
+    } catch (_) {}
   }
 
   bool _onWebKeyCode(String code) {
@@ -130,6 +153,14 @@ class _WatchScreenState extends State<WatchScreen> {
     Duration startAt = Duration.zero;
     final isLibrary =
         widget.item.mediaKind == 'movie' || widget.item.mediaKind == 'episode';
+
+    try {
+      final s = await api.getSettings();
+      final ms = s.subtitleDelay.inMilliseconds;
+      if (mounted && ms != (_subDelaySec * 1000).round()) {
+        setState(() => _subDelaySec = ms / 1000);
+      }
+    } catch (_) {}
 
     if (widget.item.externalUrl != null && widget.externalUrl != null) {
       url = widget.externalUrl!;
@@ -235,6 +266,7 @@ class _WatchScreenState extends State<WatchScreen> {
     }
 
     await _controller.play();
+    await _applyGlobalDelay(_subDelaySec);
     _startProgressTimer();
   }
 
@@ -410,7 +442,11 @@ class _WatchScreenState extends State<WatchScreen> {
       backgroundColor: const Color(0xFF1F1F1F),
       builder: (sheetCtx) => StatefulBuilder(
         builder: (sheetCtx, setSheetState) => SafeArea(
-          child: SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.55,
+            ),
+            child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -466,54 +502,22 @@ class _WatchScreenState extends State<WatchScreen> {
                     style: TextStyle(color: Colors.white)),
                 subtitle: const Text(
                     'Font, size, colors, background and position',
-                    style: TextStyle(color: Colors.white38)),
+                    style: TextStyle(color: Colors.white38, fontSize: 12)),
+                dense: true,
+                visualDensity: VisualDensity.compact,
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
                   _openSubtitleSettings();
                 },
               ),
-              const Padding(
-                padding: EdgeInsets.fromLTRB(20, 8, 20, 0),
-                child: Text('Subtitle delay',
-                    style: TextStyle(
-                        color: Colors.white70,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.5)),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
-                child: Row(
-                  children: [
-                    const Icon(Icons.slow_motion_video,
-                        color: Colors.white54, size: 20),
-                    Expanded(
-                      child: Slider(
-                        min: -10,
-                        max: 10,
-                        divisions: 400,
-                        value: _subDelaySec.clamp(-10.0, 10.0),
-                        activeColor: const Color(0xFFE50914),
-                        onChanged: (v) {
-                          _subDelaySec = v;
-                          setSheetState(() {});
-                          setState(() {});
-                          _controller.setSubtitleDelay(
-                              Duration(milliseconds: (v * 1000).round()));
-                        },
-                      ),
-                    ),
-                    SizedBox(
-                      width: 54,
-                      child: Text(
-                        '${_subDelaySec >= 0 ? '+' : ''}${_subDelaySec.toStringAsFixed(1)}s',
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 13),
-                        textAlign: TextAlign.right,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              if (_api.user?.isAdmin ?? false) ...[
+                const Divider(
+                    color: Colors.white12,
+                    height: 16,
+                    indent: 20,
+                    endIndent: 20),
+                _buildAdminDelayControl(setSheetState),
+              ],
               const Divider(
                   color: Colors.white12, height: 24, indent: 20, endIndent: 20),
               const Padding(
@@ -547,11 +551,94 @@ class _WatchScreenState extends State<WatchScreen> {
                   )),
               const SizedBox(height: 8),
               ],
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  Widget _buildAdminDelayControl(void Function(void Function()) setSheetState) {
+    _subDelayCtl.text = _subDelaySec.toStringAsFixed(1);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(left: 8, bottom: 2),
+            child: Text('Subtitle delay (global)',
+                style: TextStyle(
+                    color: Colors.white70,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                    letterSpacing: 0.5)),
+          ),
+          Row(
+            children: [
+              const Icon(Icons.slow_motion_video,
+                  color: Colors.white54, size: 20),
+              Expanded(
+                child: Slider(
+                  min: -600,
+                  max: 600,
+                  divisions: 24000,
+                  value: _subDelaySec.clamp(-600.0, 600.0),
+                  activeColor: const Color(0xFFE50914),
+                  onChanged: (v) {
+                    _subDelaySec = v;
+                    setSheetState(() {});
+                    setState(() {});
+                    _applyGlobalDelay(_subDelaySec);
+                  },
+                  onChangeEnd: (_) => _commitGlobalDelay(),
+                ),
+              ),
+              SizedBox(
+                width: 86,
+                child: TextField(
+                  controller: _subDelayCtl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                      signed: true, decimal: true),
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    suffixText: 's',
+                    suffixStyle: TextStyle(color: Colors.white38),
+                  ),
+                  textAlign: TextAlign.right,
+                  onSubmitted: (txt) {
+                    final v = double.tryParse(txt);
+                    if (v == null) return;
+                    _subDelaySec = v;
+                    setSheetState(() {});
+                    setState(() {});
+                    _applyGlobalDelay(v);
+                    _commitGlobalDelay();
+                  },
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Applies the delay to the local player (mpv sub-delay on native, overlay
+  /// position shift on web) without touching the server yet.
+  Future<void> _applyGlobalDelay(double sec) async {
+    if (kIsWeb) return;
+    await _controller.setSubtitleDelay(
+        Duration(milliseconds: (sec * 1000).round()));
+  }
+
+  Future<void> _commitGlobalDelay() async {
+    try {
+      await _api.updateSubtitleDelay(
+          Duration(milliseconds: (_subDelaySec * 1000).round()));
+    } catch (_) {}
   }
 
   void _openSubtitleSettings() {
@@ -806,10 +893,12 @@ class _WatchScreenState extends State<WatchScreen> {
     _hideTimer?.cancel();
     _progressTimer?.cancel();
     _jobPollTimer?.cancel();
+    _settingsTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
     _save();
+    _subDelayCtl.dispose();
     _controller.dispose();
     super.dispose();
   }
