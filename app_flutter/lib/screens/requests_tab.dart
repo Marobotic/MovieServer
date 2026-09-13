@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../api.dart';
 import '../models.dart';
 import 'request_new.dart';
+import 'request_catalog.dart';
 
 class RequestsTab extends StatefulWidget {
   const RequestsTab({super.key});
@@ -15,6 +16,7 @@ class RequestsTab extends StatefulWidget {
 class _RequestsTabState extends State<RequestsTab> {
   late Future<List<MediaRequest>> _future;
   String _filter = 'all';
+  bool _browse = true;
 
   @override
   void initState() {
@@ -44,6 +46,31 @@ class _RequestsTabState extends State<RequestsTab> {
 
   @override
   Widget build(BuildContext context) {
+    if (_browse) {
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            child: Row(
+              children: [
+                const Text('Discover',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w700)),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: () => setState(() => _browse = false),
+                  icon: const Icon(Icons.playlist_add_check),
+                  label: const Text('My requests'),
+                ),
+              ],
+            ),
+          ),
+          const Expanded(child: RequestCatalog()),
+        ],
+      );
+    }
     return Column(
       children: [
         Padding(
@@ -56,6 +83,11 @@ class _RequestsTabState extends State<RequestsTab> {
                       fontSize: 22,
                       fontWeight: FontWeight.w700)),
               const Spacer(),
+              TextButton(
+                onPressed: () => setState(() => _browse = true),
+                child: const Text('Browse catalog'),
+              ),
+              const SizedBox(width: 8),
               ElevatedButton.icon(
                 onPressed: () async {
                   await Navigator.of(context).push(
@@ -110,7 +142,12 @@ class _RequestsTabState extends State<RequestsTab> {
                   Wrap(
                     spacing: 8,
                     children: [
-                      for (final f in const ['all', 'pending', 'approved', 'denied'])
+                      for (final f in const [
+                        'all',
+                        'pending',
+                        'approved',
+                        'denied'
+                      ])
                         ChoiceChip(
                           label: Text(f),
                           selected: _filter == f,
@@ -119,8 +156,7 @@ class _RequestsTabState extends State<RequestsTab> {
                           },
                           selectedColor: const Color(0xFFE50914),
                           backgroundColor: const Color(0xFF262626),
-                          labelStyle:
-                              const TextStyle(color: Colors.white),
+                          labelStyle: const TextStyle(color: Colors.white),
                         ),
                     ],
                   ),
