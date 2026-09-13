@@ -425,7 +425,7 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 
 // handleTMDBSearch lets clients search TMDB for title + trailer info.
 func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
-	if s.conf.TMDbAPIKey == "" {
+	if s.conf.TMDbAPIKey == "" && s.conf.TMDbReadToken == "" {
 		writeError(w, 503, "TMDB API key not configured")
 		return
 	}
@@ -460,6 +460,59 @@ func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, out)
+}
+
+func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	if s.conf.TMDbAPIKey == "" && s.conf.TMDbReadToken == "" {
+		writeError(w, 503, "TMDB is not configured")
+		return
+	}
+	kind := r.URL.Query().Get("type")
+	if kind != "show" {
+		kind = "movie"
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	results, err := s.tmdb().catalog(kind, r.URL.Query().Get("category"), r.URL.Query().Get("q"), page)
+	if err != nil {
+		writeError(w, 502, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(results.Results))
+	for _, item := range results.Results {
+		title, year := item.Title, derpYear(item.ReleaseDate)
+		if kind == "show" {
+			title, year = item.Name, derpYear(item.FirstAirDate)
+		}
+		out = append(out, map[string]any{"tmdb_id": item.ID, "title": title, "year": year, "overview": item.Overview, "poster": tmdbThumb(item.PosterPath, "w342"), "backdrop": tmdbThumb(item.BackdropPath, "w780"), "type": kind})
+	}
+	writeJSON(w, 200, map[string]any{"page": results.Page, "total_pages": results.TotalPages, "results": out})
+}
+
+func (s *Server) handleCatalogDetail(w http.ResponseWriter, r *http.Request) {
+	if s.conf.TMDbAPIKey == "" && s.conf.TMDbReadToken == "" {
+		writeError(w, 503, "TMDB is not configured")
+		return
+	}
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id < 1 {
+		writeError(w, 400, "bad id")
+		return
+	}
+	if r.PathValue("type") == "show" {
+		show, err := s.tmdb().tv(id)
+		if err != nil {
+			writeError(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"tmdb_id": show.ID, "title": show.Name, "year": derpYear(show.FirstAirDate), "overview": show.Overview, "poster": tmdbThumb(show.PosterPath, "w500"), "backdrop": tmdbThumb(show.BackdropPath, "w1280"), "trailer_url": trailerFromVideos(show.Videos.Results), "type": "show"})
+		return
+	}
+	movie, err := s.tmdb().movie(id)
+	if err != nil {
+		writeError(w, 502, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"tmdb_id": movie.ID, "title": movie.Title, "year": derpYear(movie.ReleaseDate), "overview": movie.Overview, "poster": tmdbThumb(movie.PosterPath, "w500"), "backdrop": tmdbThumb(movie.BackdropPath, "w1280"), "trailer_url": trailerFromVideos(movie.Videos.Results), "type": "movie"})
 }
 
 func tmdbThumb(path, size string) string {
@@ -693,6 +746,21 @@ func (s *Server) handleDeleteRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	s.db.Exec(query, args...)
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *Server) clearFulfilledRequests(kind string, tmdbID int, title string, year int) {
+	if tmdbID > 0 {
+		s.db.Exec(`DELETE FROM requests WHERE kind=? AND tmdb_id=?`, kind, tmdbID)
+		return
+	}
+	if title == "" {
+		return
+	}
+	if year > 0 {
+		s.db.Exec(`DELETE FROM requests WHERE kind=? AND lower(title)=lower(?) AND (year=0 OR year=?)`, kind, title, year)
+		return
+	}
+	s.db.Exec(`DELETE FROM requests WHERE kind=? AND lower(title)=lower(?)`, kind, title)
 }
 
 func randomAvatarColor() string {
