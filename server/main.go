@@ -210,6 +210,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /api/users/{id}", s.requireAdmin(s.handleUpdateUser))
 	mux.HandleFunc("DELETE /api/users/{id}", s.requireAdmin(s.handleDeleteUser))
 
+	// global settings (admin-writable, everyone reads)
+	mux.HandleFunc("GET /api/settings", s.authMiddleware(s.handleGetSettings))
+	mux.HandleFunc("PUT /api/admin/settings", s.requireAdmin(s.handleUpdateSettings))
+
 	// admin operations
 	mux.HandleFunc("POST /api/admin/scan", s.requireAdmin(s.handleScan))
 	mux.HandleFunc("POST /api/admin/subs", s.requireAdmin(s.handleSubDownload))

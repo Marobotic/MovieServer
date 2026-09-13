@@ -234,6 +234,11 @@ CREATE TABLE IF NOT EXISTS prepare_jobs (
 	started_at  DATETIME,
 	finished_at DATETIME
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL DEFAULT ''
+);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
