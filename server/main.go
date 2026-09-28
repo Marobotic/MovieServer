@@ -22,6 +22,7 @@ type Server struct {
 	hc      *http.Client
 	version string
 	webDir  string
+	guard   *loginGuard
 }
 
 func main() {
@@ -92,6 +93,7 @@ func newServer(configPath *string) (*Server, error) {
 		hc:      &http.Client{Timeout: 30 * time.Second},
 		version: "0.1.0",
 		webDir:  conf.WebFrontend,
+		guard:   newLoginGuard(),
 	}
 
 	s.loadJobsOnStart()
@@ -144,7 +146,6 @@ func (s *Server) routes() http.Handler {
 
 	// public
 	mux.HandleFunc("GET /api/capabilities", s.handleCapabilities)
-	mux.HandleFunc("GET /api/profiles", s.handleProfiles)
 	mux.HandleFunc("POST /api/auth/setup", s.handleSetup)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 
@@ -215,6 +216,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/episodes/{id}/subtitle-delay", s.authMiddleware(s.handleGetSubtitleDelay))
 	mux.HandleFunc("PUT /api/admin/movies/{id}/subtitle-delay", s.requireAdmin(s.handleUpdateSubtitleDelay))
 	mux.HandleFunc("PUT /api/admin/episodes/{id}/subtitle-delay", s.requireAdmin(s.handleUpdateSubtitleDelay))
+	mux.HandleFunc("POST /api/admin/movies/{id}/subtitle-sync", s.requireAdmin(s.handleSubtitleSync))
+	mux.HandleFunc("POST /api/admin/episodes/{id}/subtitle-sync", s.requireAdmin(s.handleSubtitleSync))
+	mux.HandleFunc("POST /api/admin/movies/{id}/subtitle-restore", s.requireAdmin(s.handleSubtitleRestore))
+	mux.HandleFunc("POST /api/admin/episodes/{id}/subtitle-restore", s.requireAdmin(s.handleSubtitleRestore))
+	mux.HandleFunc("POST /api/admin/movies/{id}/subtitle-find", s.requireAdmin(s.handleSubtitleFind))
+	mux.HandleFunc("POST /api/admin/episodes/{id}/subtitle-find", s.requireAdmin(s.handleSubtitleFind))
+	mux.HandleFunc("GET /api/admin/movies/{id}/subtitle-options", s.requireAdmin(s.handleSubtitleOptions))
+	mux.HandleFunc("GET /api/admin/episodes/{id}/subtitle-options", s.requireAdmin(s.handleSubtitleOptions))
+	mux.HandleFunc("POST /api/admin/movies/{id}/subtitle-install", s.requireAdmin(s.handleSubtitleInstall))
+	mux.HandleFunc("POST /api/admin/episodes/{id}/subtitle-install", s.requireAdmin(s.handleSubtitleInstall))
 
 	// admin operations
 	mux.HandleFunc("POST /api/admin/scan", s.requireAdmin(s.handleScan))

@@ -5,6 +5,8 @@ import '../api.dart';
 import '../models.dart';
 import 'request_new.dart';
 import 'request_catalog.dart';
+import '../theme/tokens.dart';
+import '../widgets/toast.dart';
 
 class RequestsTab extends StatefulWidget {
   const RequestsTab({super.key});
@@ -38,8 +40,7 @@ class _RequestsTabState extends State<RequestsTab> {
       _reload();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
+        Toast.show(context, '$e', kind: ToastKind.error);
       }
     }
   }
@@ -107,7 +108,7 @@ class _RequestsTabState extends State<RequestsTab> {
             builder: (context, snap) {
               if (snap.connectionState != ConnectionState.done) {
                 return const Center(
-                  child: CircularProgressIndicator(color: Color(0xFFE50914)),
+                  child: CircularProgressIndicator(color: AppColors.red),
                 );
               }
               if (snap.hasError) {
@@ -118,17 +119,17 @@ class _RequestsTabState extends State<RequestsTab> {
                   ? all
                   : all.where((r) => r.status == _filter).toList();
               if (list.isEmpty) {
-                return Center(
+                return const Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.playlist_add,
+                      Icon(Icons.playlist_add,
                           color: Colors.white38, size: 48),
-                      const SizedBox(height: 12),
-                      const Text('No requests yet',
+                      SizedBox(height: 12),
+                      Text('No requests yet',
                           style: TextStyle(color: Colors.white54)),
-                      const SizedBox(height: 6),
-                      const Text(
+                      SizedBox(height: 6),
+                      Text(
                           'Ask for a movie or show and the admin can add it.',
                           style: TextStyle(color: Colors.white38),
                           textAlign: TextAlign.center),
@@ -154,8 +155,8 @@ class _RequestsTabState extends State<RequestsTab> {
                           onSelected: (_) {
                             setState(() => _filter = f);
                           },
-                          selectedColor: const Color(0xFFE50914),
-                          backgroundColor: const Color(0xFF262626),
+                          selectedColor: AppColors.red,
+                          backgroundColor: AppColors.surfaceHigh,
                           labelStyle: const TextStyle(color: Colors.white),
                         ),
                     ],
@@ -185,7 +186,7 @@ class _RequestCard extends StatelessWidget {
       child: ListTile(
         leading: Icon(
           r.kind == 'show' ? Icons.tv : Icons.movie,
-          color: const Color(0xFFE50914),
+          color: AppColors.red,
         ),
         title: Text(
           r.title + (r.year > 0 ? ' (${r.year})' : ''),

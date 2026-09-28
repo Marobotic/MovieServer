@@ -1,24 +1,34 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../api.dart';
 import '../../models.dart';
-import '../../widgets/poster_card.dart';
-import '../movie_detail.dart';
-import '../show_detail.dart';
-
-enum _MediaTab { movies, shows }
+import '../../theme/breakpoints.dart';
+import '../../theme/tokens.dart';
+import '../../widgets/hero_billboard.dart';
+import '../../widgets/media_card.dart';
+import '../../widgets/media_row.dart';
+import '../../widgets/state_views.dart';
+import '../browse_tab.dart';
+import '../detail_nav.dart';
+import '../watch.dart';
 
 class HomeTab extends StatefulWidget {
-  const HomeTab({super.key});
+  final void Function(MediaKind kind) onSeeAll;
+
+  const HomeTab({super.key, required this.onSeeAll});
 
   @override
-  State<HomeTab> createState() => _HomeTabState();
+  State<HomeTab> createState() => HomeTabState();
 }
 
-class _HomeTabState extends State<HomeTab> {
+class HomeTabState extends State<HomeTab> with AutomaticKeepAliveClientMixin {
   late Future<_HomeData> _future;
-  _MediaTab _tab = _MediaTab.movies;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -40,341 +50,218 @@ class _HomeTabState extends State<HomeTab> {
     );
   }
 
-  void _reload() {
-    setState(() => _future = _load());
+  /// Public so the shell can refresh the page after a scan.
+  void reload() => setState(() => _future = _load());
+
+  void _openMovie(int id) => openMovieDetail(context, id);
+
+  void _openShow(int id) => openShowDetail(context, id);
+
+  void _playMovie(Movie m) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => WatchScreen(
+        item: PlayableItem(mediaKind: 'movie', mediaId: m.id, title: m.title),
+      ),
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
+    final size = Breakpoints.of(context);
+
     return FutureBuilder<_HomeData>(
       future: _future,
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
-          return const Center(
-            child: CircularProgressIndicator(color: Color(0xFFE50914)),
-          );
+          return const LoadingView();
         }
         if (snap.hasError) {
-          return _ErrorView(message: '${snap.error}', onRetry: _reload);
+          return ErrorView(message: '${snap.error}', onRetry: reload);
         }
         final data = snap.data!;
-        return CustomScrollView(
-          slivers: [
-            SliverAppBar(
-              pinned: true,
-              backgroundColor: const Color(0xFF141414),
-              title: const Text('MOVIESERVER',
-                  style: TextStyle(
-                    color: Color(0xFFE50914),
-                    fontWeight: FontWeight.w900,
-                    fontSize: 24,
-                    letterSpacing: 1.2,
-                  )),
-              actions: [
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: _reload,
-                  tooltip: 'Reload',
+        if (data.movies.isEmpty && data.shows.isEmpty) {
+          return EmptyView(
+            icon: Icons.video_library_outlined,
+            title: 'Your library is empty',
+            hint: 'Put files in ~/Documents/MovieServer/Movies and /Shows, '
+                'then run "Scan library" in Admin.',
+            onRetry: reload,
+          );
+        }
+
+        final featured = data.featured;
+        final posterHeight = size.posterWidth * 1.5;
+        final thumbHeight = size.thumbWidth * 9 / 16 + 44;
+
+        return RefreshIndicator(
+          onRefresh: () async => reload(),
+          color: AppColors.red,
+          backgroundColor: AppColors.surface,
+          child: CustomScrollView(
+            slivers: [
+              if (featured != null)
+                SliverToBoxAdapter(
+                  child: HeroBillboard(
+                    title: featured.title,
+                    backdropUrl: featured.backdrop.isNotEmpty
+                        ? featured.backdrop
+                        : featured.poster,
+                    overview: featured.overview,
+                    meta: featured.meta,
+                    onPlay: () {
+                      if (featured.movie != null) {
+                        _playMovie(featured.movie!);
+                      } else {
+                        _openShow(featured.showId!);
+                      }
+                    },
+                    onMoreInfo: () {
+                      if (featured.movie != null) {
+                        _openMovie(featured.movie!.id);
+                      } else {
+                        _openShow(featured.showId!);
+                      }
+                    },
+                  ),
+                )
+              else
+                SliverToBoxAdapter(
+                  child: SizedBox(height: size.hasTopNav ? 88 : AppSpacing.lg),
                 ),
-              ],
-            ),
-            if (data.continueWatching.isNotEmpty)
-              SliverToBoxAdapter(
-                child: _MediaRow(
-                  'Continue watching',
-                  children: [
-                    for (final item in data.continueWatching)
-                      _ContinueCard(item: item),
-                  ],
-                ),
-              ),
-            SliverToBoxAdapter(
-              child: _TabHeader(
-                active: _tab,
-                onChanged: (t) => setState(() => _tab = t),
-              ),
-            ),
-            if (_tab == _MediaTab.movies &&
-                data.movies.isNotEmpty)
-              SliverToBoxAdapter(
-                child: _MediaRow(
-                  'Movies',
-                  children: [
-                    for (final m in data.movies)
-                      PosterCard(
-                        url: m.poster,
-                        title: m.title,
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                              builder: (_) =>
-                                  MovieDetailScreen(movieId: m.id)),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            if (_tab == _MediaTab.movies && data.movies.isEmpty)
-              const SliverToBoxAdapter(
-                child: _EmptySection(
-                    message: 'No movies yet.',
-                    hint: 'Drop files in ~/Documents/MovieServer/Movies, '
-                        'then run "Scan library" in Admin.'),
-              ),
-            if (_tab == _MediaTab.shows &&
-                data.shows.isNotEmpty)
-              SliverToBoxAdapter(
-                child: _MediaRow(
-                  'TV Shows',
-                  children: [
-                    for (final sh in data.shows)
-                      PosterCard(
-                        url: sh.poster,
-                        title: sh.title,
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                              builder: (_) =>
-                                  ShowDetailScreen(showId: sh.id)),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            if (_tab == _MediaTab.shows && data.shows.isEmpty)
-              const SliverToBoxAdapter(
-                child: _EmptySection(
-                    message: 'No TV shows yet.',
-                    hint: 'Drop files in ~/Documents/MovieServer/Shows, '
-                        'then run "Scan library" in Admin.'),
-              ),
-            if (data.movies.isEmpty && data.shows.isEmpty)
-              SliverFillRemaining(
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('Your library is empty.',
-                          style: TextStyle(
-                              color: Colors.white70, fontSize: 18)),
-                      const SizedBox(height: 8),
-                      const Text(
-                          'Put files in ~/Documents/MovieServer/Movies and '
-                          '/Shows, then run "Scan library" in Admin.',
-                          style: TextStyle(color: Colors.white38),
-                          textAlign: TextAlign.center),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: _reload,
-                        child: const Text('Reload'),
-                      ),
-                    ],
+
+              if (data.continueWatching.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: MediaRow(
+                    title: 'Continue Watching',
+                    itemCount: data.continueWatching.length,
+                    itemHeight: thumbHeight,
+                    itemBuilder: (context, i) {
+                      final item = data.continueWatching[i];
+                      return ThumbCard(
+                        url: item.poster,
+                        title: item.title,
+                        subtitle: item.duration > 0
+                            ? '${((item.position / item.duration) * 100).round()}% watched'
+                            : null,
+                        progress: item.duration > 0
+                            ? item.position / item.duration
+                            : null,
+                        onTap: () => item.mediaKind == 'movie'
+                            ? _openMovie(item.mediaId)
+                            : _openShow(item.showId),
+                      );
+                    },
                   ),
                 ),
-              ),
-            const SliverToBoxAdapter(child: SizedBox(height: 24)),
-          ],
+
+              if (data.recentlyAdded.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: MediaRow(
+                    title: 'Recently Added',
+                    itemCount: data.recentlyAdded.length,
+                    itemHeight: posterHeight,
+                    itemBuilder: (context, i) {
+                      final e = data.recentlyAdded[i];
+                      return e.movie != null
+                          ? PosterCard(
+                              url: e.movie!.poster,
+                              title: e.movie!.title,
+                              subtitle:
+                                  e.movie!.year > 0 ? '${e.movie!.year}' : null,
+                              badge:
+                                  e.movie!.needsPrep ? 'Unprocessed' : null,
+                              onTap: () => _openMovie(e.movie!.id),
+                            )
+                          : PosterCard(
+                              url: e.show!.poster,
+                              title: e.show!.title,
+                              subtitle:
+                                  e.show!.year > 0 ? '${e.show!.year}' : null,
+                              onTap: () => _openShow(e.show!.id),
+                            );
+                    },
+                  ),
+                ),
+
+              if (data.movies.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: MediaRow(
+                    title: 'Movies',
+                    itemCount: data.movies.length,
+                    itemHeight: posterHeight,
+                    onSeeAll: () => widget.onSeeAll(MediaKind.movies),
+                    itemBuilder: (context, i) {
+                      final m = data.movies[i];
+                      return PosterCard(
+                        url: m.poster,
+                        title: m.title,
+                        subtitle: m.year > 0 ? '${m.year}' : null,
+                        badge: m.needsPrep ? 'Unprocessed' : null,
+                        onTap: () => _openMovie(m.id),
+                      );
+                    },
+                  ),
+                ),
+
+              if (data.shows.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: MediaRow(
+                    title: 'TV Shows',
+                    itemCount: data.shows.length,
+                    itemHeight: posterHeight,
+                    onSeeAll: () => widget.onSeeAll(MediaKind.shows),
+                    itemBuilder: (context, i) {
+                      final sh = data.shows[i];
+                      return PosterCard(
+                        url: sh.poster,
+                        title: sh.title,
+                        subtitle: sh.year > 0 ? '${sh.year}' : null,
+                        onTap: () => _openShow(sh.id),
+                      );
+                    },
+                  ),
+                ),
+
+              const SliverToBoxAdapter(
+                  child: SizedBox(height: AppSpacing.xxxl)),
+            ],
+          ),
         );
       },
     );
   }
 }
 
-class _TabHeader extends StatelessWidget {
-  final _MediaTab active;
-  final ValueChanged<_MediaTab> onChanged;
+/// A movie or show, whichever this entry holds.
+class _Entry {
+  final Movie? movie;
+  final Show? show;
+  const _Entry.ofMovie(this.movie) : show = null;
+  const _Entry.ofShow(this.show) : movie = null;
 
-  const _TabHeader({required this.active, required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
-      child: Row(
-        children: [
-          _tabButton(_MediaTab.movies, 'Movies'),
-          const SizedBox(width: 8),
-          _tabButton(_MediaTab.shows, 'TV Shows'),
-        ],
-      ),
-    );
-  }
-
-  Widget _tabButton(_MediaTab t, String label) {
-    final selected = active == t;
-    return InkWell(
-      onTap: () => onChanged(t),
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        decoration: BoxDecoration(
-          color: selected ? const Color(0xFFE50914) : Colors.transparent,
-          border: Border.all(
-              color: selected ? const Color(0xFFE50914) : Colors.white24),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? Colors.white : Colors.white70,
-            fontWeight: FontWeight.w700,
-            fontSize: 15,
-          ),
-        ),
-      ),
-    );
-  }
+  DateTime get added =>
+      (movie?.addedAt ?? show?.addedAt) ?? DateTime.fromMillisecondsSinceEpoch(0);
 }
 
-class _EmptySection extends StatelessWidget {
-  final String message;
-  final String hint;
-
-  const _EmptySection({required this.message, required this.hint});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 32, 16, 32),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(message,
-              style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700)),
-          const SizedBox(height: 8),
-          Text(hint, style: const TextStyle(color: Colors.white38)),
-        ],
-      ),
-    );
-  }
-}
-
-class _MediaRow extends StatefulWidget {
+class _Featured {
   final String title;
-  final List<Widget> children;
+  final String backdrop;
+  final String poster;
+  final String overview;
+  final String meta;
+  final Movie? movie;
+  final int? showId;
 
-  const _MediaRow(this.title, {required this.children});
-
-  @override
-  State<_MediaRow> createState() => _MediaRowState();
-}
-
-class _MediaRowState extends State<_MediaRow> {
-  final ScrollController _controller = ScrollController();
-  bool _canLeft = false;
-  bool _canRight = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller.addListener(_updateArrows);
-  }
-
-  @override
-  void didUpdateWidget(covariant _MediaRow oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _updateArrows());
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _updateArrows() {
-    if (!_controller.hasClients) {
-      if (_canLeft || _canRight) {
-        setState(() {
-          _canLeft = false;
-          _canRight = false;
-        });
-      }
-      return;
-    }
-    final position = _controller.position;
-    final left = position.pixels > 4;
-    final right = position.pixels < position.maxScrollExtent - 4;
-    if (left != _canLeft || right != _canRight) {
-      setState(() {
-        _canLeft = left;
-        _canRight = right;
-      });
-    }
-  }
-
-  void _scrollBy(double dir) {
-    _controller.animateTo(
-      _controller.offset +
-          dir * _controller.position.viewportDimension * 0.85,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOutCubic,
-    );
-  }
-
-  Widget _arrow(bool left) {
-    return Positioned(
-      top: 0,
-      bottom: 0,
-      left: left ? 0 : null,
-      right: left ? null : 0,
-      child: Center(
-        child: Material(
-          color: const Color(0xB3000000),
-          shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: () => _scrollBy(left ? -1 : 1),
-            child: Padding(
-              padding: const EdgeInsets.all(8),
-              child: Icon(
-                left ? Icons.chevron_left : Icons.chevron_right,
-                color: Colors.white,
-                size: 28,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text(widget.title,
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700)),
-        ),
-        SizedBox(
-          height: 190,
-          child: Stack(
-            children: [
-              ListView.builder(
-                controller: _controller,
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: widget.children.length,
-                itemBuilder: (context, i) => Padding(
-                  padding: const EdgeInsets.only(right: 10),
-                  child: widget.children[i],
-                ),
-              ),
-              if (_canLeft) _arrow(true),
-              if (_canRight) _arrow(false),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
+  const _Featured({
+    required this.title,
+    required this.backdrop,
+    required this.poster,
+    required this.overview,
+    required this.meta,
+    this.movie,
+    this.showId,
+  });
 }
 
 class _HomeData {
@@ -387,114 +274,60 @@ class _HomeData {
     required this.movies,
     required this.shows,
   });
-}
 
-class _ContinueCard extends StatelessWidget {
-  final ContinueItem item;
+  /// Newest 20 titles across both kinds.
+  late final List<_Entry> recentlyAdded = () {
+    final all = <_Entry>[
+      for (final m in movies) _Entry.ofMovie(m),
+      for (final s in shows) _Entry.ofShow(s),
+    ]..sort((a, b) => b.added.compareTo(a.added));
+    return all.take(20).toList();
+  }();
 
-  const _ContinueCard({required this.item});
+  /// The billboard title. Prefers something with a backdrop, and stays stable
+  /// for the day so the page does not reshuffle on every rebuild.
+  late final _Featured? featured = () {
+    final candidates = [
+      for (final m in movies)
+        if (m.backdrop.isNotEmpty) _Entry.ofMovie(m),
+      for (final s in shows)
+        if (s.backdrop.isNotEmpty) _Entry.ofShow(s),
+    ];
+    final pool = candidates.isNotEmpty
+        ? candidates
+        : [
+            for (final m in movies) _Entry.ofMovie(m),
+            for (final s in shows) _Entry.ofShow(s),
+          ];
+    if (pool.isEmpty) return null;
 
-  @override
-  Widget build(BuildContext context) {
-    final api = context.watch<Api>();
-    final url = api.assetUrl(item.poster);
-    return InkWell(
-      onTap: () {
-        if (item.mediaKind == 'movie') {
-          Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => MovieDetailScreen(movieId: item.mediaId)));
-        } else {
-          Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => ShowDetailScreen(showId: item.showId)));
-        }
-      },
-      child: SizedBox(
-        width: 200,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: Stack(
-                children: [
-                  AspectRatio(
-                    aspectRatio: 16 / 9,
-                    child: url.isEmpty
-                        ? Container(
-                            color: const Color(0xFF262626),
-                            child: const Icon(Icons.play_circle_outline,
-                                color: Colors.white38, size: 40),
-                          )
-                        : Image.network(url,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const SizedBox()),
-                  ),
-                  if (item.duration > 0)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: LinearProgressIndicator(
-                        value: (item.position / item.duration).clamp(0.0, 1.0),
-                        color: const Color(0xFFE50914),
-                        backgroundColor: Colors.white24,
-                        minHeight: 3,
-                      ),
-                    ),
-                  Positioned(
-                    right: 8,
-                    top: 8,
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color(0xAA000000),
-                      ),
-                      child: const Icon(Icons.play_arrow, color: Colors.white),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(item.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white, fontSize: 13)),
-          ],
-        ),
-      ),
+    final today = DateTime.now();
+    final seed = today.year * 10000 + today.month * 100 + today.day;
+    final pick = pool[math.Random(seed).nextInt(pool.length)];
+
+    if (pick.movie != null) {
+      final m = pick.movie!;
+      return _Featured(
+        title: m.title,
+        backdrop: m.backdrop,
+        poster: m.poster,
+        overview: m.overview,
+        meta: [
+          if (m.year > 0) '${m.year}',
+          if (m.durationSec > 0) '${(m.durationSec / 60).round()} min',
+          'Movie',
+        ].join('  •  '),
+        movie: m,
+      );
+    }
+    final s = pick.show!;
+    return _Featured(
+      title: s.title,
+      backdrop: s.backdrop,
+      poster: s.poster,
+      overview: s.overview,
+      meta: [if (s.year > 0) '${s.year}', 'Series'].join('  •  '),
+      showId: s.id,
     );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-
-  const _ErrorView({required this.message, required this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.wifi_off, color: Colors.white38, size: 48),
-            const SizedBox(height: 12),
-            const Text('Cannot reach the MovieServer',
-                style: TextStyle(color: Colors.white, fontSize: 18)),
-            const SizedBox(height: 6),
-            Text(message,
-                style: const TextStyle(color: Colors.white54),
-                textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            ElevatedButton(onPressed: onRetry, child: const Text('Retry')),
-          ],
-        ),
-      ),
-    );
-  }
+  }();
 }

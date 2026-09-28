@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import '../theme/tokens.dart';
 
 class SeekBar extends StatefulWidget {
   final Duration position;
@@ -244,7 +245,7 @@ class _SeekBarState extends State<SeekBar> {
                         height: _hovered || _isDragging ? 7 : 4,
                         width: _barWidth * displayRatio,
                         decoration: BoxDecoration(
-                          color: const Color(0xFFE50914),
+                          color: AppColors.red,
                           borderRadius: BorderRadius.circular(4),
                         ),
                       ),
@@ -256,7 +257,7 @@ class _SeekBarState extends State<SeekBar> {
                             width: 14,
                             height: 14,
                             decoration: const BoxDecoration(
-                              color: Color(0xFFE50914),
+                              color: AppColors.red,
                               shape: BoxShape.circle,
                               boxShadow: [
                                 BoxShadow(color: Colors.black45, blurRadius: 4),

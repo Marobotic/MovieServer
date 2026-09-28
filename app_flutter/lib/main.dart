@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 import 'api.dart';
 import 'session.dart';
-import 'theme.dart';
+import 'theme/theme.dart';
 import 'screens/splash.dart';
 
 void main() async {

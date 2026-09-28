@@ -1,49 +1,44 @@
 import 'package:flutter/material.dart';
 
-/// Circular avatar showing the user's initial on their chosen color,
-/// Netflix-profile style. Supports a "Guest"/add style when profile is null.
+import '../theme/tokens.dart';
+
+/// The user's initial on their chosen colour. Netflix uses a rounded square
+/// in the nav bar and a larger one on the account page; [radius] picks between
+/// them (pass a large value for a circle).
 class ProfileAvatar extends StatelessWidget {
   final String? username;
   final Color? color;
   final double size;
-  final bool isAdd;
+  final double radius;
 
   const ProfileAvatar({
     super.key,
     this.username,
     this.color,
     this.size = 96,
-    this.isAdd = false,
+    this.radius = AppRadius.control,
   });
 
   @override
   Widget build(BuildContext context) {
+    final name = username ?? '';
     return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: isAdd
-            ? Colors.transparent
-            : (color ?? const Color(0xFF3D5AFE)),
-        shape: BoxShape.circle,
-        border: isAdd
-            ? Border.all(color: Colors.white54, width: 2)
-            : null,
+        color: color ?? const Color(0xFF3D5AFE),
+        borderRadius: BorderRadius.circular(radius),
       ),
-      child: isAdd
-          ? Icon(Icons.add, color: Colors.white54, size: size * 0.5)
-          : Center(
-              child: Text(
-                username != null && username!.isNotEmpty
-                    ? username!.substring(0, 1).toUpperCase()
-                    : '?',
-                style: TextStyle(
-                  fontSize: size * 0.42,
-                  fontWeight: FontWeight.w800,
-                  color: Colors.white,
-                ),
-              ),
-            ),
+      alignment: Alignment.center,
+      child: Text(
+        name.isNotEmpty ? name.substring(0, 1).toUpperCase() : '?',
+        style: TextStyle(
+          fontSize: size * 0.42,
+          fontWeight: FontWeight.w800,
+          color: AppColors.textPrimary,
+          height: 1.0,
+        ),
+      ),
     );
   }
 }

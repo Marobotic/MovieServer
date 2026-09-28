@@ -5,6 +5,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../api.dart';
 import '../models.dart';
 import '../session.dart';
+import '../theme/tokens.dart';
+import '../widgets/toast.dart';
 
 class RequestCatalog extends StatefulWidget {
   const RequestCatalog({super.key});
@@ -140,13 +142,11 @@ class _RequestCatalogState extends State<RequestCatalog> {
       if (!mounted) return;
       setState(() => _requested.add(item.tmdbId));
       Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${item.title} was added to your requests.')),
-      );
+      Toast.show(context, '${item.title} was added to your requests.',
+          kind: ToastKind.success);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
+        Toast.show(context, '$e', kind: ToastKind.error);
       }
     }
   }
@@ -249,7 +249,7 @@ class _RequestCatalogState extends State<RequestCatalog> {
   Widget _buildResults() {
     if (_loading && _items.isEmpty) {
       return const Center(
-          child: CircularProgressIndicator(color: Color(0xFFE50914)));
+          child: CircularProgressIndicator(color: AppColors.red));
     }
     if (_error != null && _items.isEmpty) {
       return Center(child: Text(_error!, textAlign: TextAlign.center));
@@ -325,7 +325,7 @@ class _CatalogCard extends StatelessWidget {
                     child: Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 3),
-                      color: const Color(0xFFE50914),
+                      color: AppColors.red,
                       child: const Text('REQUESTED',
                           style: TextStyle(
                               color: Colors.white,
@@ -366,7 +366,7 @@ class _CatalogDetail extends StatelessWidget {
       maxChildSize: .95,
       builder: (context, controller) => Container(
         decoration: const BoxDecoration(
-            color: Color(0xFF181818),
+            color: AppColors.surface,
             borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
         child: ListView(
           controller: controller,

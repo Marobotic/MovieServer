@@ -179,12 +179,6 @@ class Api {
     return (r as List).map((e) => User.fromJson(e)).toList();
   }
 
-  /// Public profile list, callable before login (profile picker).
-  Future<List<User>> profiles() async {
-    final r = await _request('GET', '/api/profiles', authFree: true);
-    return (r as List).map((e) => User.fromJson(e)).toList();
-  }
-
   Future<User> createUser(
       String username, String password, String role, String avatarColor) async {
     final r = await _request('POST', '/api/users', body: {
@@ -338,6 +332,60 @@ class Api {
         'GET', '/api/${_pluralKind(mediaKind)}/$id/subtitle-delay');
     return Duration(
         milliseconds: (r['subtitle_delay_ms'] as num?)?.toInt() ?? 0);
+  }
+
+  /// Admin only: asks the server to measure how far a subtitle file drifts
+  /// from the audio and, unless the match is weak, store the correction.
+  /// The analysis decodes a few sampled windows, so it takes a few seconds.
+  Future<SubtitleSyncResult> syncSubtitles(String mediaKind, int id, int index,
+      {bool apply = true}) async {
+    final r = await _request(
+        'POST', '/api/admin/${_pluralKind(mediaKind)}/$id/subtitle-sync',
+        body: {'index': index, 'apply': apply});
+    return SubtitleSyncResult.fromJson(Map<String, dynamic>.from(r));
+  }
+
+  /// Admin only: searches OpenSubtitles for a subtitle already timed for this
+  /// release, measures the candidates against the audio and installs the best.
+  Future<SubtitleSyncResult> findSubtitles(String mediaKind, int id, int index,
+      {bool apply = true}) async {
+    final r = await _request(
+        'POST', '/api/admin/${_pluralKind(mediaKind)}/$id/subtitle-find',
+        body: {'index': index, 'apply': apply});
+    return SubtitleSyncResult.fromJson(Map<String, dynamic>.from(r));
+  }
+
+  /// Admin only: lists the subtitles OpenSubtitles has for an item. Costs no
+  /// download quota - only installing one does.
+  Future<List<SubtitleOption>> subtitleOptions(String mediaKind, int id,
+      {String language = 'en', int limit = 12}) async {
+    final r = await _request(
+        'GET', '/api/admin/${_pluralKind(mediaKind)}/$id/subtitle-options',
+        query: {'language': language, 'limit': '$limit'});
+    return ((r as Map<String, dynamic>)['options'] as List? ?? [])
+        .map((e) => SubtitleOption.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  /// Admin only: downloads one chosen option and puts it in place.
+  Future<SubtitleSyncResult> installSubtitle(
+      String mediaKind, int id, int fileId,
+      {int? index, String? language}) async {
+    final r = await _request(
+        'POST', '/api/admin/${_pluralKind(mediaKind)}/$id/subtitle-install',
+        body: {
+          'file_id': fileId,
+          if (index != null) 'index': index,
+          if (language != null) 'language': language,
+        });
+    return SubtitleSyncResult.fromJson(Map<String, dynamic>.from(r));
+  }
+
+  /// Admin only: puts back the untouched subtitle a sync set aside.
+  Future<void> restoreSubtitles(String mediaKind, int id, int index) async {
+    await _request(
+        'POST', '/api/admin/${_pluralKind(mediaKind)}/$id/subtitle-restore',
+        body: {'index': index});
   }
 
   /// Admin only: persists the subtitle delay in milliseconds for one item.

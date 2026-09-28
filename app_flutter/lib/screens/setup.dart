@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../session.dart';
 import 'home.dart';
+import '../theme/tokens.dart';
 
 class SetupScreen extends StatefulWidget {
   const SetupScreen({super.key});
@@ -31,7 +32,7 @@ class _SetupScreenState extends State<SetupScreen> {
               children: [
                 const Text('MOVIESERVER',
                     style: TextStyle(
-                      color: Color(0xFFE50914),
+                      color: AppColors.red,
                       fontSize: 34,
                       fontWeight: FontWeight.w900,
                       letterSpacing: 1.5,

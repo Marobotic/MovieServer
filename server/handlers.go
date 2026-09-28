@@ -33,32 +33,6 @@ func readJSON(r *http.Request, v interface{}) error {
 
 // ---- users ----
 
-// handleProfiles returns the public-facing list of profiles (id, username,
-// avatar) so a logged-out user can pick who they are, Netflix-style.
-func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(`SELECT id, username, avatar_color FROM users ORDER BY id`)
-	if err != nil {
-		writeError(w, 500, "db error")
-		return
-	}
-	defer rows.Close()
-	type profile struct {
-		ID          int64  `json:"id"`
-		Username    string `json:"username"`
-		AvatarColor string `json:"avatar_color"`
-	}
-	out := make([]profile, 0)
-	for rows.Next() {
-		var p profile
-		if err := rows.Scan(&p.ID, &p.Username, &p.AvatarColor); err != nil {
-			writeError(w, 500, "db error")
-			return
-		}
-		out = append(out, p)
-	}
-	writeJSON(w, 200, out)
-}
-
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(`SELECT id, username, role, avatar_color, audio_lang, created_at FROM users ORDER BY id`)
 	if err != nil {
@@ -212,11 +186,38 @@ func adminCount(db *sql.DB) int {
 
 // ---- library ----
 
+// webStates maps media ids of one kind to their browser-playback state.
+func (s *Server) webStates(kind string) map[int64]string {
+	out := make(map[int64]string)
+	rows, err := s.db.Query(`SELECT media_id, state FROM media_checks WHERE kind = ?`, kind)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var state string
+		if rows.Scan(&id, &state) == nil {
+			out[id] = state
+		}
+	}
+	return out
+}
+
+// needsPrep reports whether a state means "a browser cannot play this yet".
+func needsPrep(state string) bool {
+	return state == classQuickFix || state == classNeedsEncode
+}
+
 func (s *Server) handleMovies(w http.ResponseWriter, r *http.Request) {
 	list, err := s.listMovies()
 	if err != nil {
 		writeError(w, 500, "db error")
 		return
+	}
+	states := s.webStates("movie")
+	for i := range list {
+		list[i].WebState = states[list[i].ID]
 	}
 	writeJSON(w, 200, list)
 }
@@ -278,13 +279,17 @@ func (s *Server) handleShowDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	type jsonEp struct {
 		Episode
-		Position   int64 `json:"position_sec"`
-		Progressed int64 `json:"watched_sec"`
-		Completed  bool  `json:"completed"`
+		Position   int64  `json:"position_sec"`
+		Progressed int64  `json:"watched_sec"`
+		Completed  bool   `json:"completed"`
+		WebState   string `json:"web_state,omitempty"`
 	}
+	// Preparing happens per file, so the flag belongs on the episode that
+	// needs it rather than on the show as a whole.
+	states := s.webStates("episode")
 	out := make([]jsonEp, 0, len(eps))
 	for _, e := range eps {
-		je := jsonEp{Episode: e}
+		je := jsonEp{Episode: e, WebState: states[e.ID]}
 		if p, ok := progress[strconv.FormatInt(e.ID, 10)]; ok {
 			je.Position = p.Position
 			je.Progressed = p.Position

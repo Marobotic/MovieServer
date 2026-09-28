@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -188,7 +189,25 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "user": u, "needs_setup": false})
 }
 
+// dummyHash is compared against when the username does not exist, so a wrong
+// username costs the same bcrypt work as a wrong password and cannot be told
+// apart by response time.
+var dummyHash = func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte(randomHex(16)), bcrypt.DefaultCost)
+	if err != nil {
+		return nil
+	}
+	return h
+}()
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	key := clientKey(r)
+	if ok, wait := s.guard.allowed(key); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
+		return
+	}
+
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -197,21 +216,32 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	row := s.db.QueryRow(`SELECT id, username, password_hash, role, avatar_color, created_at FROM users WHERE username = ?`, strings.TrimSpace(req.Username))
+
+	row := s.db.QueryRow(`SELECT id, username, password_hash, role, avatar_color, audio_lang, created_at FROM users WHERE username = ?`, strings.TrimSpace(req.Username))
 	u := &User{}
 	var created string
-	if err := row.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &u.AvatarColor, &created); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusUnauthorized, "invalid credentials")
-			return
-		}
+	err := row.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &u.AvatarColor, &u.AudioLang, &created)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	if !checkPassword(u.Password, req.Password) {
-		writeError(w, http.StatusUnauthorized, "invalid credentials")
+
+	// Always spend the bcrypt work, whether or not the account exists.
+	found := err == nil
+	var ok bool
+	if found {
+		ok = checkPassword(u.Password, req.Password)
+	} else {
+		bcrypt.CompareHashAndPassword(dummyHash, []byte(req.Password))
+		ok = false
+	}
+	if !ok {
+		s.guard.fail(key)
+		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
+
+	s.guard.success(key)
 	u.CreatedAt = parseDBTime(created)
 	tok, err := issueToken(s.conf.JWTSecret, *u)
 	if err != nil {

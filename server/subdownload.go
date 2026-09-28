@@ -322,9 +322,18 @@ func (s *Server) downloadSubtitles() {
 		abs := filepath.Join(s.conf.MediaDir, j.relPath)
 		dir := filepath.Dir(abs)
 		stem := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
+		// A track already inside the video beats anything downloadable, so do
+		// not spend quota fetching a language the release already carries.
+		muxed := map[string]bool{}
+		for _, e := range embeddedSubtitles(abs) {
+			muxed[shortLangCode(e.Language)] = true
+		}
 		for _, lang := range subLangs {
 			dest := filepath.Join(dir, fmt.Sprintf("%s.%s.srt", stem, lang))
 			if fileExists(dest) {
+				continue
+			}
+			if muxed[lang] {
 				continue
 			}
 			b := osSearchBody{Query: j.query, Year: j.year, Type: j.kind}

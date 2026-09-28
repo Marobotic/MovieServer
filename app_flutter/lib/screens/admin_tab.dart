@@ -10,6 +10,8 @@ import '../api.dart';
 import '../models.dart';
 import '../session.dart';
 import '../widgets/profile_avatar.dart';
+import '../theme/tokens.dart';
+import '../widgets/toast.dart';
 
 class AdminTab extends StatelessWidget {
   const AdminTab({super.key});
@@ -61,8 +63,8 @@ class _AdminScreenState extends State<AdminScreen> {
                   label: Text(label),
                   selected: _section == i,
                   onSelected: (_) => setState(() => _section = i),
-                  selectedColor: const Color(0xFFE50914),
-                  backgroundColor: const Color(0xFF262626),
+                  selectedColor: AppColors.red,
+                  backgroundColor: AppColors.surfaceHigh,
                   labelStyle: const TextStyle(color: Colors.white),
                 ),
             ],
@@ -139,6 +141,7 @@ class _LibrarySectionState extends State<_LibrarySection> {
       ],
     );
     if (result == null || result.files.isEmpty) return;
+    if (!mounted) return;
     final file = result.files.first;
 
     // choose kind
@@ -228,8 +231,7 @@ class _LibrarySectionState extends State<_LibrarySection> {
 
   void _showSnack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+    Toast.show(context, msg);
   }
 
   @override
@@ -308,14 +310,14 @@ class _LibrarySectionState extends State<_LibrarySection> {
           ),
         ),
         if (!context.read<AppSession>().tmdbConfigured)
-          Card(
+          const Card(
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.all(16),
               child: Row(
                 children: [
-                  const Icon(Icons.info_outline, color: Color(0xFFF9A825)),
-                  const SizedBox(width: 12),
-                  const Expanded(
+                  Icon(Icons.info_outline, color: Color(0xFFF9A825)),
+                  SizedBox(width: 12),
+                  Expanded(
                     child: Text(
                         'Posters, descriptions and trailers need a free TMDB API key '
                         '(tmdb.org). Add it to the server config.json and restart.',
@@ -371,7 +373,7 @@ class _AdminRequestsState extends State<_AdminRequests> {
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
           return const Center(
-              child: CircularProgressIndicator(color: Color(0xFFE50914)));
+              child: CircularProgressIndicator(color: AppColors.red));
         }
         if (snap.hasError) return Center(child: Text('${snap.error}'));
         final list = (snap.data ?? [])
@@ -390,8 +392,8 @@ class _AdminRequestsState extends State<_AdminRequests> {
                         label: Text(f),
                         selected: _filter == f,
                         onSelected: (_) => setState(() => _filter = f),
-                        selectedColor: const Color(0xFFE50914),
-                        backgroundColor: const Color(0xFF262626),
+                        selectedColor: AppColors.red,
+                        backgroundColor: AppColors.surfaceHigh,
                         labelStyle: const TextStyle(color: Colors.white),
                       ),
                     ),
@@ -422,7 +424,7 @@ class _AdminRequestsState extends State<_AdminRequests> {
                                       Icon(r.kind == 'show'
                                           ? Icons.tv
                                           : Icons.movie,
-                                          color: const Color(0xFFE50914),
+                                          color: AppColors.red,
                                           size: 18),
                                       const SizedBox(width: 8),
                                       Expanded(
@@ -487,10 +489,10 @@ class _AdminRequestsState extends State<_AdminRequests> {
                                     ],
                                   ),
                                   const SizedBox(height: 4),
-                                  Text(
+                                  const Text(
                                       'Approved = the admin will add this file. '
                                       'Place it in the library folder and scan.',
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                           color: Colors.white24, fontSize: 11)),
                                 ],
                               ),
@@ -537,8 +539,7 @@ class _UsersSectionState extends State<_UsersSection> {
       _reload();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
+        Toast.show(context, '$e', kind: ToastKind.error);
       }
     }
   }
@@ -555,8 +556,7 @@ class _UsersSectionState extends State<_UsersSection> {
       _reload();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
+        Toast.show(context, '$e', kind: ToastKind.error);
       }
     }
   }
@@ -583,8 +583,7 @@ class _UsersSectionState extends State<_UsersSection> {
       _reload();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
+        Toast.show(context, '$e', kind: ToastKind.error);
       }
     }
   }
@@ -596,7 +595,7 @@ class _UsersSectionState extends State<_UsersSection> {
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
           return const Center(
-              child: CircularProgressIndicator(color: Color(0xFFE50914)));
+              child: CircularProgressIndicator(color: AppColors.red));
         }
         if (snap.hasError) return Center(child: Text('${snap.error}'));
         final users = snap.data ?? [];
@@ -871,7 +870,7 @@ class _LogsSectionState extends State<_LogsSection> {
                       },
                     ),
                     filled: true,
-                    fillColor: const Color(0xFF262626),
+                    fillColor: AppColors.surfaceHigh,
                     isDense: true,
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(10),

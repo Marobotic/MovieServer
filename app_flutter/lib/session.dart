@@ -8,32 +8,35 @@ class AppSession extends ChangeNotifier {
   bool needsSetup = false;
   bool tmdbConfigured = false;
   bool _loadingUsers = false;
+  Future<void>? _init;
 
   AppSession(this.api);
 
   User? get user => api.user;
   bool get isAdmin => user?.isAdmin ?? false;
 
-  Future<void> init() async {
+  /// Completes once capabilities and the stored session have been checked.
+  /// Safe to await from several places; the work runs exactly once.
+  Future<void> get ready => _init ??= _bootstrap();
+
+  /// Kept for the call in main(); it just starts [ready].
+  Future<void> init() => ready;
+
+  Future<void> _bootstrap() async {
     try {
       final caps = await api.capabilities();
       needsSetup = caps['needs_setup'] == true;
       tmdbConfigured = caps['tmdb_configured'] == true;
     } catch (_) {
-      // server unreachable; screen will show retry
+      // server unreachable; the screen will offer a retry
     }
     if (api.token != null) {
-      final u = await api.me();
-      if (u != null) {
-        notifyListeners();
-      }
+      await api.me();
     }
+    notifyListeners();
   }
 
   bool get loadingUsers => _loadingUsers;
-
-  /// Public list of profiles (works before login, Netflix-style picker).
-  Future<List<User>> profiles() => api.profiles();
 
   Future<List<User>> users() async {
     _loadingUsers = true;

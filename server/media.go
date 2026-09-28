@@ -303,6 +303,10 @@ type subtitleTrack struct {
 	URL      string `json:"url"`
 	Language string `json:"language,omitempty"`
 	Name     string `json:"name"`
+
+	// True for a track that lives inside the video file. Those are in sync by
+	// construction, so the app picks one over a downloaded file.
+	Embedded bool `json:"embedded,omitempty"`
 }
 
 // subtitleOwner returns the season/episode key that isolates a show's
@@ -318,7 +322,21 @@ func (s *Server) subtitleOwner(kind string, id int64) *seriesKey {
 	return &seriesKey{season: se, episode: ep}
 }
 
-func (s *Server) subtitleTracks(kind string, id int64) ([]subtitleTrack, error) {
+// resolvedSubtitle is one entry in the player's subtitle list: either a file
+// next to the video or a track inside it.
+type resolvedSubtitle struct {
+	external *subFile
+	embedded *embeddedSub
+}
+
+// subtitleSources lists everything playable for an item, tracks muxed into the
+// video first.
+//
+// Those come first because they cannot be out of sync: whoever built the
+// release timed them against that exact cut, so they need no correction and no
+// searching. A downloaded .srt is a guess about which release you have; an
+// embedded track is not.
+func (s *Server) subtitleSources(kind string, id int64) ([]resolvedSubtitle, error) {
 	dir, err := s.mediaDirFor(kind, id)
 	if err != nil {
 		return nil, err
@@ -328,19 +346,54 @@ func (s *Server) subtitleTracks(kind string, id int64) ([]subtitleTrack, error) 
 		return nil, err
 	}
 	stem := strings.TrimSuffix(filepath.Base(full), filepath.Ext(full))
-	subs := findSubtitles(dir, stem, s.subtitleOwner(kind, id))
+
+	external := findSubtitles(dir, stem, s.subtitleOwner(kind, id))
+	embedded := embeddedSubtitles(full)
+
+	out := make([]resolvedSubtitle, 0, len(external)+len(embedded))
+	for i := range embedded {
+		out = append(out, resolvedSubtitle{embedded: &embedded[i]})
+	}
+	for i := range external {
+		out = append(out, resolvedSubtitle{external: &external[i]})
+	}
+	return out, nil
+}
+
+func (s *Server) subtitleTracks(kind string, id int64) ([]subtitleTrack, error) {
+	dir, err := s.mediaDirFor(kind, id)
+	if err != nil {
+		return nil, err
+	}
+	full, err := s.resolveMediaFile(kind, id)
+	if err != nil {
+		return nil, err
+	}
+	_ = dir
+	_ = full
+	sources, err := s.subtitleSources(kind, id)
+	if err != nil {
+		return nil, err
+	}
 	route := "movies"
 	if kind == "episode" {
 		route = "episodes"
 	}
-	out := make([]subtitleTrack, 0, len(subs))
-	for i, sf := range subs {
-		out = append(out, subtitleTrack{
-			Index:    i,
-			URL:      fmt.Sprintf("/api/%s/%d/subtitles/%d", route, id, i),
-			Language: sf.Lang,
-			Name:     sf.Name,
-		})
+	out := make([]subtitleTrack, 0, len(sources))
+	for i, src := range sources {
+		t := subtitleTrack{
+			Index: i,
+			URL:   fmt.Sprintf("/api/%s/%d/subtitles/%d", route, id, i),
+		}
+		if src.external != nil {
+			t.Language = src.external.Lang
+			t.Name = src.external.Name
+		} else {
+			t.Language = languageName(src.embedded.Language)
+			t.Name = src.embedded.Label()
+			t.Embedded = true
+		}
+		out = append(out, t)
 	}
 	return out, nil
 }
@@ -367,22 +420,37 @@ func (s *Server) handleSubtitle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, err.Error())
 		return
 	}
-	stem := strings.TrimSuffix(filepath.Base(full), filepath.Ext(full))
-	subs := findSubtitles(dir, stem, s.subtitleOwner(kind, id))
-	if idx < 0 || idx >= len(subs) {
+	_ = dir
+	sources, err := s.subtitleSources(kind, id)
+	if err != nil {
+		writeError(w, 404, err.Error())
+		return
+	}
+	if idx < 0 || idx >= len(sources) {
 		writeError(w, 404, "subtitle not found")
 		return
 	}
-	ext := strings.ToLower(filepath.Ext(subs[idx].Path))
-	switch ext {
+
+	path := ""
+	if src := sources[idx]; src.external != nil {
+		path = src.external.Path
+	} else {
+		// Pulled out of the container on first use and cached.
+		extracted, err := s.extractEmbedded(full, *src.embedded)
+		if err != nil {
+			writeError(w, 500, err.Error())
+			return
+		}
+		path = extracted
+	}
+
+	switch strings.ToLower(filepath.Ext(path)) {
 	case ".vtt":
 		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-	case ".ass", ".ssa":
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	default:
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	}
-	http.ServeFile(w, r, subs[idx].Path)
+	http.ServeFile(w, r, path)
 }
 
 // ---- audio tracks ----

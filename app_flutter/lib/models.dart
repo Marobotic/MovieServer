@@ -35,6 +35,11 @@ class Movie {
   final String backdrop;
   final String trailerUrl;
   final int durationSec;
+  final DateTime? addedAt;
+
+  /// Browser-playback state from the server's media check: "web_direct",
+  /// "web_ready", "quick_fix", "needs_encode", "preparing", "damaged".
+  final String webState;
 
   const Movie({
     required this.id,
@@ -47,6 +52,8 @@ class Movie {
     required this.backdrop,
     required this.trailerUrl,
     required this.durationSec,
+    this.addedAt,
+    this.webState = '',
   });
 
   factory Movie.fromJson(Map<String, dynamic> j) => Movie(
@@ -60,7 +67,13 @@ class Movie {
         backdrop: j['backdrop'] ?? '',
         trailerUrl: j['trailer_url'] ?? '',
         durationSec: j['duration_sec'] ?? 0,
+        addedAt: DateTime.tryParse(j['added_at'] ?? ''),
+        webState: j['web_state'] ?? '',
       );
+
+  /// True when a browser cannot play this file until it has been prepared.
+  bool get needsPrep =>
+      webState == 'quick_fix' || webState == 'needs_encode';
 }
 
 class Show {
@@ -71,6 +84,7 @@ class Show {
   final String poster;
   final String backdrop;
   final String trailerUrl;
+  final DateTime? addedAt;
 
   const Show({
     required this.id,
@@ -80,6 +94,7 @@ class Show {
     required this.poster,
     required this.backdrop,
     required this.trailerUrl,
+    this.addedAt,
   });
 
   factory Show.fromJson(Map<String, dynamic> j) => Show(
@@ -90,6 +105,73 @@ class Show {
         poster: j['poster'] ?? '',
         backdrop: j['backdrop'] ?? '',
         trailerUrl: j['trailer_url'] ?? '',
+        addedAt: DateTime.tryParse(j['added_at'] ?? ''),
+      );
+}
+
+/// Outcome of a server-side subtitle alignment run.
+class SubtitleSyncResult {
+  final int offsetMs;
+  final double confidence;
+  final bool applied;
+
+  /// True when the subtitle file itself was corrected, rather than a delay
+  /// being stored. Only a rewrite can undo drift, and only a rewrite can be
+  /// undone from the backup the server keeps.
+  final bool rewroteFile;
+  final String engine;
+  final int cueCount;
+  final String message;
+
+  const SubtitleSyncResult({
+    required this.offsetMs,
+    required this.confidence,
+    required this.applied,
+    required this.rewroteFile,
+    required this.engine,
+    required this.cueCount,
+    required this.message,
+  });
+
+  Duration get offset => Duration(milliseconds: offsetMs);
+
+  factory SubtitleSyncResult.fromJson(Map<String, dynamic> j) =>
+      SubtitleSyncResult(
+        offsetMs: (j['offset_ms'] as num?)?.toInt() ?? 0,
+        confidence: (j['confidence'] as num?)?.toDouble() ?? 0,
+        applied: j['applied'] == true,
+        rewroteFile: j['rewrote_file'] == true,
+        engine: j['engine'] ?? '',
+        cueCount: (j['cue_count'] as num?)?.toInt() ?? 0,
+        message: j['message'] ?? '',
+      );
+}
+
+/// One subtitle on offer from OpenSubtitles, before anything is downloaded.
+class SubtitleOption {
+  final int fileId;
+  final String name;
+  final String language;
+  final int downloads;
+
+  /// True when it was uploaded against this exact video file, which means it
+  /// needs no syncing at all.
+  final bool hashMatch;
+
+  const SubtitleOption({
+    required this.fileId,
+    required this.name,
+    required this.language,
+    required this.downloads,
+    required this.hashMatch,
+  });
+
+  factory SubtitleOption.fromJson(Map<String, dynamic> j) => SubtitleOption(
+        fileId: (j['file_id'] as num?)?.toInt() ?? 0,
+        name: j['name'] ?? '',
+        language: j['language'] ?? '',
+        downloads: (j['downloads'] as num?)?.toInt() ?? 0,
+        hashMatch: j['hash_match'] == true,
       );
 }
 
@@ -108,6 +190,10 @@ class Episode {
   final int positionSec;
   final bool completed;
 
+  /// Browser-playback state from the server's media check. Preparing happens
+  /// per file, so this lives on the episode rather than on the show.
+  final String webState;
+
   const Episode({
     required this.id,
     required this.showId,
@@ -122,10 +208,15 @@ class Episode {
     required this.trailerUrl,
     required this.positionSec,
     required this.completed,
+    this.webState = '',
   });
 
   String get label =>
       completed ? 'Watched' : (positionSec > 0 ? 'Continue' : '');
+
+  /// True when a browser cannot play this episode until it has been prepared.
+  bool get needsPrep =>
+      webState == 'quick_fix' || webState == 'needs_encode';
 
   factory Episode.fromJson(Map<String, dynamic> j) => Episode(
         id: j['id'],
@@ -141,6 +232,7 @@ class Episode {
         trailerUrl: j['trailer_url'] ?? '',
         positionSec: j['watched_sec'] ?? 0,
         completed: j['completed'] == true,
+        webState: j['web_state'] ?? '',
       );
 }
 
@@ -291,11 +383,16 @@ class SubtitleInfo {
   final String language;
   final String name;
 
+  /// True when the track lives inside the video file. Those are in sync by
+  /// construction, so they are preferred over anything downloaded.
+  final bool embedded;
+
   const SubtitleInfo({
     required this.index,
     required this.url,
     required this.language,
     required this.name,
+    this.embedded = false,
   });
 
   factory SubtitleInfo.fromJson(Map<String, dynamic> j) => SubtitleInfo(
@@ -303,6 +400,7 @@ class SubtitleInfo {
         url: j['url'] ?? '',
         language: j['language'] ?? '',
         name: j['name'] ?? '',
+        embedded: j['embedded'] == true,
       );
 }
 

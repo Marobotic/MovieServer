@@ -13,10 +13,11 @@ extension _KeyboardEvent on JSObject {
 
 void Function() installWebKeyHandler(bool Function(String code) handler) {
   final listener = ((JSAny event) {
-    final code = (event as JSObject).code;
-    if (code == null || (event as JSObject).repeat) return;
+    final ev = event as JSObject;
+    final code = ev.code;
+    if (code == null || ev.repeat) return;
     if (!handler(code)) return;
-    (event as JSObject).preventDefault();
+    ev.preventDefault();
   }).toJS;
   _windowAddEventListener('keydown', listener);
   return () => _windowRemoveEventListener('keydown', listener);

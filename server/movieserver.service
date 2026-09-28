@@ -1,21 +1,32 @@
 [Unit]
-Description=MovieServer (family media server)
+Description=MovieServer (self-hosted media server)
 After=network.target
 
 [Service]
 Type=simple
-User=maro
-WorkingDirectory=/home/maro/Work/MovieServer/server
-ExecStart=/home/maro/Work/MovieServer/server/movieserver
+
+# Install as a user unit, not a system unit:
+#   mkdir -p ~/.config/systemd/user
+#   cp server/movieserver.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now movieserver
+#   loginctl enable-linger $USER     # keep it running after logout
+#
+# Adjust the two paths below to wherever you checked the project out.
+# Building first:  cd server && go build -o movieserver .
+
+User=%i
+WorkingDirectory=%h/Work/MovieServer/server
+ExecStart=%h/Work/MovieServer/server/movieserver
 Restart=on-failure
 RestartSec=3
 Nice=5
 StandardOutput=journal
 StandardError=journal
 
-# The server listens on :8080 for family devices on the LAN.
-# Uncomment and adjust if you want it bound to a specific interface.
-# Environment=MOVIESERVER=...
+# Listens on :8080 for devices on the local network.
+# Set MOVIESERVER to override the address, data dir or media root.
+# Environment=MOVIESERVER=:9090
 
 [Install]
 WantedBy=default.target

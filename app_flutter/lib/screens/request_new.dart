@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 import '../api.dart';
 import '../models.dart';
 import '../session.dart';
+import '../theme/tokens.dart';
+import '../widgets/toast.dart';
 
 class RequestNewScreen extends StatefulWidget {
   const RequestNewScreen({super.key});
@@ -48,8 +50,7 @@ class _RequestNewScreenState extends State<RequestNewScreen> {
       setState(() => _hits = hits);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
+        Toast.show(context, '$e', kind: ToastKind.error);
       }
     } finally {
       if (mounted) setState(() => _searching = false);
@@ -115,9 +116,9 @@ class _RequestNewScreenState extends State<RequestNewScreen> {
           const SizedBox(height: 18),
 
           if (_tmdbUsable) ...[
-            Text(
+            const Text(
                 'Search (picks the exact title and year automatically). Leave blank to type it.',
-                style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                style: TextStyle(color: Colors.white54, fontSize: 12)),
             const SizedBox(height: 8),
             TextField(
               decoration: const InputDecoration(
@@ -134,7 +135,7 @@ class _RequestNewScreenState extends State<RequestNewScreen> {
                         width: 20,
                         height: 20,
                         child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Color(0xFFE50914)))),
+                            strokeWidth: 2, color: AppColors.red))),
               ),
             if (_hits.isNotEmpty)
               ConstrainedBox(

@@ -18,10 +18,56 @@ descriptions and trailers (via TMDB), a request system, and an admin panel.
 
 ```
 MovieServer/
-├── server/          # Go backend (API + steamer + web host)
+├── server/          # Go backend (API + streaming + web host)
 ├── app_flutter/     # Flutter app (android/ windows/ linux/ web/)
-└── ~/Documents/MovieServer/   # your media (Movies/ and Shows/)
+└── <media root>/    # your media, Movies/ and Shows/ (default: ~/Documents/MovieServer)
 ```
+
+## Architecture
+
+**Backend** - Go 1.26, single binary, no cgo. SQLite through `modernc.org`.
+`golang-jwt/jwt` for auth. Routes use the Go 1.22+ mux patterns.
+
+- Folder scanner and a one-shot library organizer (`-organize`) that creates
+  per-title folders, moves episodes into `Season NN/`, and cleans messy names.
+- Playback preflight (`GET /api/{kind}/{id}/playback`) classifies each file as
+  `play`, `needs_quick_fix`, `needs_encode`, `preparing`, `damaged` or
+  `still_copying`, and reports a CPU-remux or GPU-encode estimate. The client
+  asks before playing rather than failing mid-playback.
+- HLS path remuxes H.264 video with `-c:v copy` and re-encodes audio to stereo
+  AAC, because Chromium's MSE rejects multichannel AAC. Non-H.264 gets a
+  `409 needs_encode` and a background prepare job instead.
+- Range-based `/stream` for direct seeking.
+- Background job runner for scans, media checks, transcodes and subtitle
+  fetches, with ffmpeg output garbage-collected by a janitor.
+- TMDB enrichment with local artwork taking precedence, so a poster you dropped
+  in the folder always wins.
+- OpenSubtitles integration for external SRTs, with a per-item offset from the
+  player.
+
+**Client** - Flutter, one codebase for Android, Windows, Linux and web.
+Playback via `media_kit` (libmpv native, hls.js on web) so the same code path
+behaves the same everywhere. Per-user progress, continue-watching, requests,
+admin panel.
+
+**Auth** - bearer token. Stream, HLS, playback and subtitle endpoints also
+accept `?token=` because browser players cannot set headers on media requests.
+
+## Testing
+
+```bash
+cd server
+go test ./...
+```
+
+Covers the media classification, playback decisions and job runner, which are
+the three places where a mistake is expensive.
+
+## Local paths
+
+Your media and the config live outside the repo, so nothing personal is
+committed. `server/config.json` holds the TMDB and OpenSubtitles credentials
+and is gitignored, as is `server/data/`.
 
 ## Quick start (Linux server)
 
@@ -32,7 +78,7 @@ cd server
 ```
 
 On first run it creates `config.json` and prints the local address, e.g.
-`http://192.168.3.54:8080`. Open it in a browser, complete the one-time admin
+`http://<your-ip>:8080`. Open it in a browser, complete the one-time admin
 setup, then create profiles for the family.
 
 ### Auto-start (systemd)

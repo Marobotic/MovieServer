@@ -37,6 +37,11 @@ type Movie struct {
 	TMDbID     int       `json:"tmdb_id,omitempty"`
 	Broken     bool      `json:"broken,omitempty"`
 	AddedAt    time.Time `json:"added_at"`
+
+	// How this file stands for browser playback ("web_direct", "web_ready",
+	// "quick_fix", "needs_encode", "preparing", "damaged"). Filled in by the
+	// list handler from media_checks, not stored on the row.
+	WebState string `json:"web_state,omitempty"`
 }
 
 type Show struct {

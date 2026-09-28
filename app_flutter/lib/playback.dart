@@ -13,6 +13,11 @@ abstract class PlaybackController {
 
   Stream<Duration> get position;
   Stream<Duration> get duration;
+
+  /// How far ahead the player has buffered. The watch screen used to hold a
+  /// field that was never assigned, so the seek bar's buffered track was
+  /// always zero-width.
+  Stream<Duration> get buffered;
   Stream<bool> get buffering;
   Stream<bool> get playing;
 
@@ -60,6 +65,9 @@ class NativePlaybackController implements PlaybackController {
   Stream<Duration> get duration => _player.stream.duration;
 
   @override
+  Stream<Duration> get buffered => _player.stream.buffer;
+
+  @override
   Stream<bool> get buffering => _player.stream.buffering;
 
   @override
@@ -99,13 +107,21 @@ class NativePlaybackController implements PlaybackController {
   Future<void> setAudioTrack(int? streamIndex) async {
     if (kIsWeb) return;
     try {
-      final avail = _player.state.tracks.audio;
-      if (streamIndex == null || avail.isEmpty) {
+      if (streamIndex == null) {
         await _player.setAudioTrack(AudioTrack.no());
         return;
       }
-      final t = avail[streamIndex.clamp(0, avail.length - 1)];
-      await _player.setAudioTrack(t);
+      // The server numbers audio tracks by their position among the file's
+      // audio streams, but media_kit prepends the synthetic 'auto' and 'no'
+      // entries to its list. Indexing the raw list therefore selected the
+      // wrong track - and track 1 selected "no audio", silencing playback.
+      final real = _player.state.tracks.audio
+          .where((t) => t.id != 'auto' && t.id != 'no')
+          .toList();
+      if (real.isEmpty || streamIndex < 0 || streamIndex >= real.length) {
+        return;
+      }
+      await _player.setAudioTrack(real[streamIndex]);
     } catch (_) {}
   }
 
